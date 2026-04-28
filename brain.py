@@ -152,17 +152,17 @@ class ConversationStateMachine:
 
 def greeting_prompt(hour: int) -> str:
     if hour < 12:
-        return """Ezra just greeted you in the morning. Respond with a brief morning greeting.
+        return """Operator just greeted you in the morning. Respond with a brief morning greeting.
 If you know The Thing for today, mention it. If not, ask.
 Keep it to one sentence."""
     elif hour < 18:
-        return "Ezra greeted you. Brief acknowledgment. One sentence."
+        return "Operator greeted you. Brief acknowledgment. One sentence."
     else:
-        return "Ezra greeted you in the evening. Brief, warm. One sentence."
+        return "Operator greeted you in the evening. Brief, warm. One sentence."
 
 
 def question_prompt() -> str:
-    return """Ezra asked a question. Answer directly and concisely.
+    return """Operator asked a question. Answer directly and concisely.
 For yes/no questions, start your first word with exactly "Yes." or "No.".
 For true/false questions, start your first word with exactly "True." or "False.".
 If you need to reference RBOS files, say what you know from context.
@@ -170,7 +170,7 @@ Under 50 words."""
 
 
 def vent_prompt() -> str:
-    return """Ezra is expressing frustration or emotional distress.
+    return """Operator is expressing frustration or emotional distress.
 DO NOT: motivate, give advice, list solutions, or say "I understand."
 DO: Reflect what you hear. Ask one question. Keep space open.
 Use a Branden stem if appropriate: "If I bring 5% more awareness to what I'm feeling..."
@@ -178,14 +178,14 @@ Under 30 words."""
 
 
 def transition_prompt(phase_name: str) -> str:
-    return f"""Ezra is transitioning ({phase_name}). Acknowledge briefly.
+    return f"""Operator is transitioning ({phase_name}). Acknowledge briefly.
 If ending the day: name one thing that shipped.
 If starting: name The Thing.
 One sentence."""
 
 
 def checkin_prompt() -> str:
-    return """Ezra wants a status check. Use your context to answer:
+    return """Operator wants a status check. Use your context to answer:
 - What's The Thing today?
 - What shift is it?
 - What's the energy?
@@ -272,14 +272,14 @@ def _save_capture(item: str):
 
 # ── System Prompt ────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are Merlin, an ambient AI companion on Ezra's desk.
+SYSTEM_PROMPT = """You are Merlin, an ambient AI companion on Operator's desk.
 
 Character: King Rhoam from Breath of the Wild. Still, direct, curious, patient. The sage. He is the hero.
 
 Voice rules:
 - One or two short sentences. Under 30 words total.
 - Plain declarative speech. No exclamation points. No therapy language.
-- You help Ezra think. You do not think for him.
+- You help Operator think. You do not think for him.
 - You do not motivate, lecture, or list tasks. You observe and reflect.
 - When he's stuck, ask one question. When he succeeds, name it simply.
 - Never say: should, need to, just, obviously, productive, remember, try.
@@ -361,7 +361,7 @@ def load_briefing_context():
             log.debug(f"STATE.md error: {e}")
 
     if context_parts:
-        return "What you know about Ezra:\n" + "\n".join(f"- {c}" for c in context_parts)
+        return "What you know about Operator:\n" + "\n".join(f"- {c}" for c in context_parts)
     return ""
 
 
@@ -595,9 +595,9 @@ class Brain:
         # Nudge binary questions toward explicit yes/no starts so PTZ gestures can fire.
         binary_question = re.match(r"^\s*(is|are|do|does|did|can|could|will|would|should|has|have|had)\b", message.lower())
         if binary_question:
-            user_text = f'Ezra says: "{message}"\nAnswer with "Yes." or "No." as the first word.'
+            user_text = f'Operator says: "{message}"\nAnswer with "Yes." or "No." as the first word.'
         else:
-            user_text = f'Ezra says: "{message}"'
+            user_text = f'Operator says: "{message}"'
         messages.append({"role": "user", "content": user_text})
 
         # Intent-specific token limit
