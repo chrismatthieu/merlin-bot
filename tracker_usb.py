@@ -43,9 +43,14 @@ FINE_ZONE = 0.20
 MIN_VELOCITY = 0.12
 FACE_LOST_TIMEOUT = 2.5
 FACE_MISS_FRAMES = 12
+FACE_HIT_FRAMES = 6
+FACE_CONF_MIN = 0.62
+FACE_CONF_MIN_SCAN_LOCK = 0.80
+SCAN_LOCK_CENTER_TOL_X = 0.22
 SCAN_ENABLED = True
 SCAN_HOLD_SEC = 1.2
-SCAN_POSITIONS = [(-60.0, 0.0), (-20.0, 0.0), (20.0, 0.0), (60.0, 0.0), (0.0, 0.0)]
+SCAN_HORIZONTAL_PASS = [-60.0, -20.0, 20.0, 60.0, 20.0, -20.0, 0.0]
+SCAN_PASS_TILTS = [0.0, 32.0, -32.0]  # middle, up, down
 
 # Smoothing + PD control
 SMOOTH_ALPHA = 0.7
@@ -165,7 +170,7 @@ DETECT_SIZE = (256, 144)
 
 def detect_face(frame):
     """Detect largest face via YuNet at reduced resolution.
-    Returns (cx, cy) normalized 0-1, or None."""
+    Returns (cx, cy, confidence) normalized 0-1, or None."""
     small = cv2.resize(frame, DETECT_SIZE)
     yunet.setInputSize(DETECT_SIZE)
     _, faces = yunet.detect(small)
@@ -175,9 +180,12 @@ def detect_face(frame):
 
     best = max(range(len(faces)), key=lambda i: faces[i][14])
     f = faces[best]
+    conf = float(f[14])
+    if conf < FACE_CONF_MIN:
+        return None
     cx = (f[0] + f[2] / 2) / DETECT_SIZE[0]
     cy = (f[1] + f[3] / 2) / DETECT_SIZE[1]
-    return (cx, cy)
+    return (cx, cy, conf)
 
 
 # ── Performance Logger ────────────────────────────────────────
@@ -266,6 +274,7 @@ def main():
     logger = TrackingLogger()
     face_lost_since = None
     face_miss_frames = 0
+    face_hit_frames = 0
     is_tracking = False
     is_moving = False
     last_log = 0
@@ -297,11 +306,25 @@ def main():
             detect_ms = (time.monotonic() - t_detect) * 1000
 
             if face is not None:
-                raw_x, raw_y = face
+                raw_x, raw_y, raw_conf = face
                 face_lost_since = None
                 face_miss_frames = 0
+                face_hit_frames += 1
 
                 if not is_tracking:
+                    # During scan, only lock when detection is very confident.
+                    if raw_conf < FACE_CONF_MIN_SCAN_LOCK:
+                        time.sleep(0.01)
+                        continue
+                    # Ignore edge detections during scan; wait until target is
+                    # near center of frame to avoid locking on false positives.
+                    if abs(raw_x - 0.5) > SCAN_LOCK_CENTER_TOL_X:
+                        time.sleep(0.01)
+                        continue
+                    if face_hit_frames < FACE_HIT_FRAMES:
+                        # Require a stable hit streak before exiting room scan.
+                        time.sleep(0.01)
+                        continue
                     smooth_x = raw_x
                     smooth_y = raw_y
                     prev_err_x = raw_x - 0.5
@@ -407,6 +430,7 @@ def main():
                     if time.monotonic() - face_lost_since > FACE_LOST_TIMEOUT:
                         print("[tracker] Face lost → room scan")
                         is_tracking = False
+                        face_hit_frames = 0
                         face_miss_frames = 0
                         face_lost_since = None
                         scan_active = SCAN_ENABLED
@@ -416,9 +440,15 @@ def main():
                 elif SCAN_ENABLED and scan_active:
                     now = time.monotonic()
                     if now - last_scan_move >= SCAN_HOLD_SEC:
-                        pan, tilt = SCAN_POSITIONS[scan_idx]
+                        pass_len = len(SCAN_HORIZONTAL_PASS)
+                        pass_count = len(SCAN_PASS_TILTS)
+                        total_steps = pass_len * pass_count
+                        step = scan_idx % total_steps
+                        tilt = SCAN_PASS_TILTS[step // pass_len]
+                        pan = SCAN_HORIZONTAL_PASS[step % pass_len]
                         ptz.set_absolute(pan, tilt)
-                        scan_idx = (scan_idx + 1) % len(SCAN_POSITIONS)
+                        print(f"[tracker] scanning pan={pan:+.0f} tilt={tilt:+.0f}")
+                        scan_idx = (scan_idx + 1) % total_steps
                         last_scan_move = now
 
             time.sleep(0.01)
