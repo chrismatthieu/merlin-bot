@@ -41,7 +41,11 @@ SPEED_FAST = 5.0
 SPEED_FINE = 0.7
 FINE_ZONE = 0.20
 MIN_VELOCITY = 0.12
-FACE_LOST_TIMEOUT = 8.0
+FACE_LOST_TIMEOUT = 2.5
+FACE_MISS_FRAMES = 12
+SCAN_ENABLED = True
+SCAN_HOLD_SEC = 1.2
+SCAN_POSITIONS = [(-60.0, 0.0), (-20.0, 0.0), (20.0, 0.0), (60.0, 0.0), (0.0, 0.0)]
 
 # Smoothing + PD control
 SMOOTH_ALPHA = 0.7
@@ -141,12 +145,23 @@ class PTZController:
         if self._ptz:
             self._ptz.close()
 
+    def set_absolute(self, pan_deg: float, tilt_deg: float):
+        """Set explicit pan/tilt target (used by idle room scan)."""
+        self._pan = max(-155.0, min(155.0, float(pan_deg)))
+        self._tilt = max(-90.0, min(90.0, float(tilt_deg)))
+        if self._ptz:
+            try:
+                self._ptz.set_pantilt(self._pan, self._tilt)
+            except Exception as e:
+                print(f"[tracker] PTZ error: {e}")
+
 
 # ── Face Detection (YuNet) ────────────────────────────────────
 
 yunet = cv2.FaceDetectorYN.create(YUNET_MODEL, "", (640, 480), 0.5, 0.3, 5000)
 
-DETECT_SIZE = (320, 240)
+# Smaller detection input improves scan/reacquire latency on Mac.
+DETECT_SIZE = (256, 144)
 
 def detect_face(frame):
     """Detect largest face via YuNet at reduced resolution.
@@ -250,9 +265,14 @@ def main():
 
     logger = TrackingLogger()
     face_lost_since = None
+    face_miss_frames = 0
     is_tracking = False
     is_moving = False
     last_log = 0
+    # Scan by default until a face is found.
+    scan_active = SCAN_ENABLED
+    scan_idx = 0
+    last_scan_move = 0.0
 
     # Smoothing state
     smooth_x = 0.5
@@ -279,6 +299,7 @@ def main():
             if face is not None:
                 raw_x, raw_y = face
                 face_lost_since = None
+                face_miss_frames = 0
 
                 if not is_tracking:
                     smooth_x = raw_x
@@ -287,6 +308,7 @@ def main():
                     prev_err_y = raw_y - 0.5
                     print(f"[tracker] Face acquired ({raw_x:.2f}, {raw_y:.2f})")
                     is_tracking = True
+                    scan_active = False
                     notify_brain("face_arrived")
 
                 # 1. Exponential smoothing
@@ -370,6 +392,11 @@ def main():
 
             else:
                 if is_tracking:
+                    face_miss_frames += 1
+                    # Ignore brief detector flicker to avoid unnecessary scanning.
+                    if face_miss_frames < FACE_MISS_FRAMES:
+                        time.sleep(0.01)
+                        continue
                     if face_lost_since is None:
                         face_lost_since = time.monotonic()
                         ptz.stop()
@@ -378,11 +405,21 @@ def main():
                         current_tilt_vel = 0.0
 
                     if time.monotonic() - face_lost_since > FACE_LOST_TIMEOUT:
-                        print("[tracker] Face lost → home")
-                        ptz.home()
+                        print("[tracker] Face lost → room scan")
                         is_tracking = False
+                        face_miss_frames = 0
                         face_lost_since = None
+                        scan_active = SCAN_ENABLED
+                        scan_idx = 0
+                        last_scan_move = 0.0
                         notify_brain("face_lost")
+                elif SCAN_ENABLED and scan_active:
+                    now = time.monotonic()
+                    if now - last_scan_move >= SCAN_HOLD_SEC:
+                        pan, tilt = SCAN_POSITIONS[scan_idx]
+                        ptz.set_absolute(pan, tilt)
+                        scan_idx = (scan_idx + 1) % len(SCAN_POSITIONS)
+                        last_scan_move = now
 
             time.sleep(0.01)
 

@@ -39,9 +39,9 @@ INTENT_RULES = [
     (Intent.COMMAND, [
         r"^capture[:\s]", r"^remind me", r"^set timer", r"^mute", r"^unmute",
         r"^what time is it", r"^timer", r"^look\b", r"^scan\b", r"^pan\b",
-        r"\blook\s+(left|right|around|center|centre|straight|ahead|forward)\b",
+        r"\blook\s+(left|right|up|down|around|center|centre|straight|ahead|forward)\b",
         r"\bscan\s+(the\s+)?room\b",
-        r"\bpan\s+(left|right)\b",
+        r"\bpan\s+(left|right|up|down)\b",
     ]),
     # GREETING
     (Intent.GREETING, [
@@ -247,6 +247,12 @@ def handle_command(text: str, bus) -> str | None:
         if re.search(r"\b(right)\b", text_lower):
             bus.emit("ptz_action", action="look_right")
             return "Looking right."
+        if re.search(r"\b(up)\b", text_lower):
+            bus.emit("ptz_action", action="look_up")
+            return "Looking up."
+        if re.search(r"\b(down)\b", text_lower):
+            bus.emit("ptz_action", action="look_down")
+            return "Looking down."
         if re.search(r"\b(center|centre|straight|ahead|forward)\b", text_lower):
             bus.emit("ptz_action", action="look_center")
             return "Centering."

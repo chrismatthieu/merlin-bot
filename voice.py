@@ -342,6 +342,10 @@ class Voice:
             sequence = ["{pan=-72000,tilt=0}", "{pan=0,tilt=0}"]
         elif action == "look_right":
             sequence = ["{pan=72000,tilt=0}", "{pan=0,tilt=0}"]
+        elif action == "look_up":
+            sequence = ["{pan=0,tilt=54000}", "{pan=0,tilt=0}"]
+        elif action == "look_down":
+            sequence = ["{pan=0,tilt=-54000}", "{pan=0,tilt=0}"]
         elif action == "look_center":
             sequence = ["{pan=0,tilt=0}"]
         elif action == "look_around":
