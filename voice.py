@@ -69,12 +69,14 @@ class Voice:
         self._bus = bus
         bus.on("speak", self._on_speak)
         bus.on("speak_nonverbal", self._on_speak_nonverbal)
+        bus.on("ptz_action", self._on_ptz_action)
         self._load_tts()
 
     def stop(self) -> None:
         if self._bus:
             self._bus.off("speak", self._on_speak)
             self._bus.off("speak_nonverbal", self._on_speak_nonverbal)
+            self._bus.off("ptz_action", self._on_ptz_action)
 
     def is_alive(self) -> bool:
         return True  # Voice is event-driven (no background thread to die)
@@ -108,6 +110,14 @@ class Voice:
             ).start()
         else:
             log.warning(f"Sound not found: {sound_path}")
+
+    def _on_ptz_action(self, action: str = "") -> None:
+        """Handle explicit PTZ movement commands from brain."""
+        if not action:
+            return
+        threading.Thread(
+            target=self._run_ptz_action, args=(action,), daemon=True, name="ptz-action"
+        ).start()
 
     def _speak_thread(self, text: str) -> None:
         """Generate TTS and push to camera speaker. Runs in a thread."""
@@ -304,6 +314,56 @@ class Voice:
                     check=False,
                 )
                 time.sleep(0.28)
+            except Exception:
+                return
+
+    def _run_ptz_action(self, action: str) -> None:
+        """Execute larger directional PTZ moves like look left/right/around."""
+        uvc_paths = [
+            str(Path.home() / ".local" / "bin" / "uvc-util"),
+            "/usr/local/bin/uvc-util",
+            "/opt/homebrew/bin/uvc-util",
+            "uvc-util",
+        ]
+        uvc_bin = None
+        for p in uvc_paths:
+            try:
+                r = subprocess.run([p, "--version"], capture_output=True, timeout=2)
+                if r.returncode == 0:
+                    uvc_bin = p
+                    break
+            except Exception:
+                continue
+        if not uvc_bin:
+            return
+
+        cam_idx = str(config.USB_CAMERA_INDEX)
+        if action == "look_left":
+            sequence = ["{pan=-72000,tilt=0}", "{pan=0,tilt=0}"]
+        elif action == "look_right":
+            sequence = ["{pan=72000,tilt=0}", "{pan=0,tilt=0}"]
+        elif action == "look_center":
+            sequence = ["{pan=0,tilt=0}"]
+        elif action == "look_around":
+            sequence = [
+                "{pan=0,tilt=0}",
+                "{pan=-72000,tilt=0}",
+                "{pan=72000,tilt=0}",
+                "{pan=0,tilt=0}",
+            ]
+        else:
+            return
+
+        log.info(f"PTZ action: {action} (camera index {cam_idx})")
+        for value in sequence:
+            try:
+                subprocess.run(
+                    [uvc_bin, "-I", cam_idx, "-s", f"pan-tilt-abs={value}"],
+                    capture_output=True,
+                    timeout=4,
+                    check=False,
+                )
+                time.sleep(0.5)
             except Exception:
                 return
 

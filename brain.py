@@ -38,7 +38,10 @@ INTENT_RULES = [
     # COMMAND — short-circuits LLM entirely
     (Intent.COMMAND, [
         r"^capture[:\s]", r"^remind me", r"^set timer", r"^mute", r"^unmute",
-        r"^what time is it", r"^timer",
+        r"^what time is it", r"^timer", r"^look\b", r"^scan\b", r"^pan\b",
+        r"\blook\s+(left|right|around|center|centre|straight|ahead|forward)\b",
+        r"\bscan\s+(the\s+)?room\b",
+        r"\bpan\s+(left|right)\b",
     ]),
     # GREETING
     (Intent.GREETING, [
@@ -160,6 +163,8 @@ Keep it to one sentence."""
 
 def question_prompt() -> str:
     return """Ezra asked a question. Answer directly and concisely.
+For yes/no questions, start your first word with exactly "Yes." or "No.".
+For true/false questions, start your first word with exactly "True." or "False.".
 If you need to reference RBOS files, say what you know from context.
 Under 50 words."""
 
@@ -233,6 +238,21 @@ def handle_command(text: str, bus) -> str | None:
         item = re.match(r"^remind me[:\s]+(.+)", text, re.IGNORECASE).group(1).strip()
         _save_capture(f"REMINDER: {item}")
         return f"I'll remind you: {item}"
+
+    # Camera movement
+    if re.search(r"\b(look|scan|pan)\b", text_lower):
+        if re.search(r"\b(left)\b", text_lower):
+            bus.emit("ptz_action", action="look_left")
+            return "Looking left."
+        if re.search(r"\b(right)\b", text_lower):
+            bus.emit("ptz_action", action="look_right")
+            return "Looking right."
+        if re.search(r"\b(center|centre|straight|ahead|forward)\b", text_lower):
+            bus.emit("ptz_action", action="look_center")
+            return "Centering."
+        if re.search(r"\b(around|room|scan)\b", text_lower):
+            bus.emit("ptz_action", action="look_around")
+            return "Scanning the room."
 
     return None
 
@@ -572,7 +592,13 @@ class Brain:
         for ex in self._history:
             messages.append({"role": "user", "content": ex["user"]})
             messages.append({"role": "assistant", "content": ex["assistant"]})
-        messages.append({"role": "user", "content": f'Ezra says: "{message}"'})
+        # Nudge binary questions toward explicit yes/no starts so PTZ gestures can fire.
+        binary_question = re.match(r"^\s*(is|are|do|does|did|can|could|will|would|should|has|have|had)\b", message.lower())
+        if binary_question:
+            user_text = f'Ezra says: "{message}"\nAnswer with "Yes." or "No." as the first word.'
+        else:
+            user_text = f'Ezra says: "{message}"'
+        messages.append({"role": "user", "content": user_text})
 
         # Intent-specific token limit
         max_tokens = INTENT_MAX_TOKENS.get(intent, 100)
