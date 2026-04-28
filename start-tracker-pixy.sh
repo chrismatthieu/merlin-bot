@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Standalone USB face tracker. For the full stack in one shot, use ./start-merlin-ollama.sh instead.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

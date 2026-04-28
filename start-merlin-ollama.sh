@@ -9,6 +9,29 @@ MERLIN_MODEL="${MERLIN_MODEL:-llama3.2:3b}"
 MERLIN_VISION_MODEL="${MERLIN_VISION_MODEL:-qwen3-vl:2b}"
 MERLIN_AUDIO_SOURCE="${MERLIN_AUDIO_SOURCE:-usb}"
 MERLIN_CAMERA_INDEX="${MERLIN_CAMERA_INDEX:-0}"
+# Set MERLIN_START_TRACKER=0 to skip tracker_usb.py (orchestrator only).
+MERLIN_START_TRACKER="${MERLIN_START_TRACKER:-1}"
+
+MAIN_PID=""
+TRACKER_PID=""
+_CLEANED_UP=0
+
+cleanup() {
+  [ "$_CLEANED_UP" = "1" ] && return
+  _CLEANED_UP=1
+  if [ -n "${TRACKER_PID:-}" ] && kill -0 "$TRACKER_PID" 2>/dev/null; then
+    kill -TERM "$TRACKER_PID" 2>/dev/null || true
+    wait "$TRACKER_PID" 2>/dev/null || true
+  fi
+  if [ -n "${MAIN_PID:-}" ] && kill -0 "$MAIN_PID" 2>/dev/null; then
+    kill -TERM "$MAIN_PID" 2>/dev/null || true
+    wait "$MAIN_PID" 2>/dev/null || true
+  fi
+}
+
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM HUP
+trap cleanup EXIT
 
 if ! command -v ollama >/dev/null 2>&1; then
   echo "Error: ollama is not installed or not on PATH."
@@ -60,12 +83,58 @@ echo "  Model:        $MERLIN_MODEL"
 echo "  Vision model: $MERLIN_VISION_MODEL"
 echo "  Audio source: $MERLIN_AUDIO_SOURCE"
 echo "  Camera index: $MERLIN_CAMERA_INDEX"
+if [ "$MERLIN_AUDIO_SOURCE" = "usb" ] && [ "$MERLIN_START_TRACKER" != "0" ]; then
+  echo "  Face tracker: tracker_usb.py (after /health)"
+else
+  echo "  Face tracker: (skipped)"
+fi
 echo
 
 cd "$ROOT_DIR"
-MERLIN_LLM_URL="$MERLIN_LLM_URL" \
-MERLIN_MODEL="$MERLIN_MODEL" \
-MERLIN_VISION_MODEL="$MERLIN_VISION_MODEL" \
-MERLIN_AUDIO_SOURCE="$MERLIN_AUDIO_SOURCE" \
-MERLIN_CAMERA_INDEX="$MERLIN_CAMERA_INDEX" \
-"$PYTHON_BIN" -u main.py
+
+_run_main_env() {
+  MERLIN_LLM_URL="$MERLIN_LLM_URL" \
+  MERLIN_MODEL="$MERLIN_MODEL" \
+  MERLIN_VISION_MODEL="$MERLIN_VISION_MODEL" \
+  MERLIN_AUDIO_SOURCE="$MERLIN_AUDIO_SOURCE" \
+  MERLIN_CAMERA_INDEX="$MERLIN_CAMERA_INDEX" \
+    "$@"
+}
+
+if [ "$MERLIN_AUDIO_SOURCE" = "usb" ] && [ "$MERLIN_START_TRACKER" != "0" ]; then
+  _run_main_env "$PYTHON_BIN" -u main.py &
+  MAIN_PID=$!
+
+  echo "Waiting for http://localhost:8900/health ..."
+  HEALTH_OK=0
+  for _ in $(seq 1 80); do
+    if curl -sf "http://localhost:8900/health" >/dev/null; then
+      HEALTH_OK=1
+      break
+    fi
+    if ! kill -0 "$MAIN_PID" 2>/dev/null; then
+      echo "Error: main.py exited before becoming healthy."
+      wait "$MAIN_PID" || true
+      exit 1
+    fi
+    sleep 0.25
+  done
+  if [ "$HEALTH_OK" != "1" ]; then
+    echo "Error: Timed out waiting for /health (is port 8900 blocked?)."
+    exit 1
+  fi
+
+  echo "Starting USB face tracker..."
+  MERLIN_CAMERA_INDEX="$MERLIN_CAMERA_INDEX" \
+  MERLIN_BRAIN_URL="${MERLIN_BRAIN_URL:-http://localhost:8900/event}" \
+    "$PYTHON_BIN" -u tracker_usb.py &
+  TRACKER_PID=$!
+  echo "  Tracker PID: $TRACKER_PID"
+  echo
+
+  wait "$MAIN_PID"
+  RET=$?
+  exit "$RET"
+fi
+
+_run_main_env "$PYTHON_BIN" -u main.py

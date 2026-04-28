@@ -38,7 +38,10 @@ INTENT_RULES = [
     # COMMAND — short-circuits LLM entirely
     (Intent.COMMAND, [
         r"^capture[:\s]", r"^remind me", r"^set timer", r"^mute", r"^unmute",
-        r"^what time is it", r"^timer", r"^look\b", r"^scan\b", r"^pan\b",
+        r"^what time is it", r"^what date is it", r"^what day is it",
+        r"^date", r"^time", r"^timer", r"^look\b", r"^scan\b", r"^pan\b",
+        r"\b(what('s| is)\s+the\s+time|current\s+time|time\s+now)\b",
+        r"\b(what('s| is)\s+the\s+date|today'?s\s+date|current\s+date)\b",
         r"\blook\s+(left|right|up|down|around|center|centre|straight|ahead|forward)\b",
         r"\bscan\s+(the\s+)?room\b",
         r"\bpan\s+(left|right|up|down)\b",
@@ -87,6 +90,20 @@ def classify_intent(text: str) -> Intent:
             if re.search(pattern, text_lower):
                 return intent
     return Intent.GENERAL
+
+
+def is_scene_query(text: str) -> bool:
+    """Detect direct requests for current visual scene."""
+    text_lower = text.lower().strip()
+    patterns = [
+        r"\bwhat do you see\b",
+        r"\bwhat can you see\b",
+        r"\bwhat are you seeing\b",
+        r"\bdescribe (what you see|the scene|the room|my desk)\b",
+        r"\blook around\b",
+        r"\bwhat's in (the room|front of you)\b",
+    ]
+    return any(re.search(p, text_lower) for p in patterns)
 
 
 # ── Conversation State Machine ──────────────────────────────────
@@ -232,9 +249,20 @@ def handle_command(text: str, bus) -> str | None:
         _save_capture(item)
         return f"Captured: {item}"
 
-    # Time
-    if "what time is it" in text_lower:
+    # Time / date (always from system clock)
+    if (
+        "what time is it" in text_lower
+        or re.search(r"\b(what('s| is)\s+the\s+time|current\s+time|time\s+now)\b", text_lower)
+        or text_lower in {"time", "time?"}
+    ):
         return datetime.now().strftime("It's %I:%M %p.")
+    if (
+        "what date is it" in text_lower
+        or "what day is it" in text_lower
+        or re.search(r"\b(what('s| is)\s+the\s+date|today'?s\s+date|current\s+date)\b", text_lower)
+        or text_lower in {"date", "date?"}
+    ):
+        return datetime.now().strftime("Today is %A, %B %-d, %Y.")
 
     # Remind
     if re.match(r"^remind me[:\s]+(.+)", text_lower):
@@ -492,6 +520,17 @@ class Brain:
 
         if not message:
             message = "you said my name"
+
+        # Direct scene query: answer from live vision cache immediately.
+        # This avoids LLM drift and guarantees "what do you see?" works.
+        if is_scene_query(message):
+            response = self._scene_description.strip() if self._scene_description else ""
+            if not response:
+                response = "I'm still scanning the scene. Ask again in a moment."
+            self._last_spoken = response
+            self._bus.emit("speak", text=response)
+            self._last_response_time = time.time()
+            return
 
         # 4. Classify intent
         intent = classify_intent(message)

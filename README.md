@@ -130,17 +130,15 @@ Use this when the **EMEET PIXY** is the mic and camera and you want **local Olla
 - YuNet weights: `models/face_detection_yunet_2023mar.onnx`
 - Python 3.11+ with deps installed (venv or Conda — the repo scripts default to `PYTHON_BIN=/Users/.../miniconda3/envs/merlin311/bin/python`; override with `export PYTHON_BIN=...`)
 
-**Start Merlin** (refuses to start if PIXY is not listed by AVFoundation when `MERLIN_AUDIO_SOURCE=usb`):
+**Start Merlin** (refuses to start if PIXY is not listed by AVFoundation when `MERLIN_AUDIO_SOURCE=usb`). This single command starts the orchestrator, waits for `http://localhost:8900/health`, then starts **`tracker_usb.py`** so the PIXY follows your face:
 
 ```bash
 ./start-merlin-ollama.sh
 ```
 
-**Start the USB face tracker** (second terminal; same PIXY index as detected from ffmpeg):
+To run the orchestrator **without** the USB face tracker (e.g. debugging): `MERLIN_START_TRACKER=0 ./start-merlin-ollama.sh`
 
-```bash
-./start-tracker-pixy.sh
-```
+**Tracker only** (same as before): `./start-tracker-pixy.sh` — useful if you split processes across terminals.
 
 The tracker notifies the brain at `http://localhost:8900/event` for face arrived/lost.
 
@@ -154,13 +152,12 @@ The tracker notifies the brain at `http://localhost:8900/event` for face arrived
 | `MERLIN_AUDIO_SOURCE` | `usb` for PIXY on the same Mac |
 | `MERLIN_CAMERA_INDEX` | Video device index; start scripts usually set this from `ffmpeg -f avfoundation -list_devices` |
 
-**Restart / port 8900 in use:** If a previous Merlin did not exit cleanly, the HTTP server may fail with “address already in use”. Free the port and restart both processes:
+**Restart / port 8900 in use:** If a previous Merlin did not exit cleanly, the HTTP server may fail with “address already in use”. Free the port and restart (the start script stops the tracker when main exits; if something is stuck, kill tracker too):
 
 ```bash
 lsof -nP -iTCP:8900 -sTCP:LISTEN   # note PID
-kill <pid>                         # or: pkill -f main.py
+kill <pid>                         # or: pkill -f main.py; pkill -f tracker_usb.py
 ./start-merlin-ollama.sh
-./start-tracker-pixy.sh
 curl -sS http://localhost:8900/health
 ```
 
@@ -228,9 +225,8 @@ python probe_camera.py
 # Full system (after configuring LLM URL + models in env / .env)
 python main.py
 
-# macOS PIXY + Ollama convenience wrappers
+# macOS PIXY + Ollama (orchestrator + face tracker)
 ./start-merlin-ollama.sh
-./start-tracker-pixy.sh
 
 # Test audio only
 python audio_usb.py
