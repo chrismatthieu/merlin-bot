@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON_BIN="${PYTHON_BIN:-/Users/chrismatthieu/miniconda3/envs/merlin311/bin/python}"
+
+MERLIN_LLM_URL="${MERLIN_LLM_URL:-http://localhost:11434/v1/chat/completions}"
+MERLIN_MODEL="${MERLIN_MODEL:-llama3.2:3b}"
+MERLIN_VISION_MODEL="${MERLIN_VISION_MODEL:-qwen3-vl:2b}"
+MERLIN_AUDIO_SOURCE="${MERLIN_AUDIO_SOURCE:-usb}"
+MERLIN_CAMERA_INDEX="${MERLIN_CAMERA_INDEX:-0}"
+
+if ! command -v ollama >/dev/null 2>&1; then
+  echo "Error: ollama is not installed or not on PATH."
+  exit 1
+fi
+
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  echo "Error: ffmpeg is required for STT. Install with: brew install ffmpeg"
+  exit 1
+fi
+
+if [ ! -x "$PYTHON_BIN" ]; then
+  echo "Error: Python not found at: $PYTHON_BIN"
+  echo "Set PYTHON_BIN to your merlin Python executable and retry."
+  exit 1
+fi
+
+if ! curl -sSf "http://localhost:11434/api/tags" >/dev/null; then
+  echo "Error: Ollama server is not reachable on localhost:11434."
+  echo "Start it with: ollama serve"
+  exit 1
+fi
+
+if [ "$MERLIN_AUDIO_SOURCE" = "usb" ]; then
+  DEVICE_LIST="$(ffmpeg -f avfoundation -list_devices true -i "" 2>&1 || true)"
+  PIXY_LINE="$(printf "%s\n" "$DEVICE_LIST" | grep -Ei "emeet|pixy" || true)"
+  if [ -z "$PIXY_LINE" ]; then
+    echo "Error: EMEET PIXY is not detected by macOS."
+    echo "Detected cameras:"
+    printf "%s\n" "$DEVICE_LIST" | grep -E "AVFoundation video devices|\\[[0-9]+\\]"
+    echo
+    echo "Fixes to try:"
+    echo "  - Replug PIXY directly into Mac (avoid passive hubs)."
+    echo "  - Use a USB data cable (not charge-only)."
+    echo "  - Quit apps that may own camera (Zoom/Teams/Photo Booth)."
+    echo "  - Check camera permission for your terminal/Cursor in macOS Privacy settings."
+    exit 1
+  fi
+
+  DETECTED_INDEX="$(printf "%s\n" "$PIXY_LINE" | sed -E 's/.*\[([0-9]+)\].*/\1/' | head -n 1)"
+  if [ -n "$DETECTED_INDEX" ]; then
+    MERLIN_CAMERA_INDEX="$DETECTED_INDEX"
+  fi
+fi
+
+echo "Starting Merlin with Ollama..."
+echo "  LLM URL:      $MERLIN_LLM_URL"
+echo "  Model:        $MERLIN_MODEL"
+echo "  Vision model: $MERLIN_VISION_MODEL"
+echo "  Audio source: $MERLIN_AUDIO_SOURCE"
+echo "  Camera index: $MERLIN_CAMERA_INDEX"
+echo
+
+cd "$ROOT_DIR"
+MERLIN_LLM_URL="$MERLIN_LLM_URL" \
+MERLIN_MODEL="$MERLIN_MODEL" \
+MERLIN_VISION_MODEL="$MERLIN_VISION_MODEL" \
+MERLIN_AUDIO_SOURCE="$MERLIN_AUDIO_SOURCE" \
+MERLIN_CAMERA_INDEX="$MERLIN_CAMERA_INDEX" \
+"$PYTHON_BIN" -u main.py

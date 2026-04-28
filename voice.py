@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 import tempfile
 import threading
@@ -62,6 +63,7 @@ class Voice:
         self._bus = None
         self._tts_model = None
         self._lock = threading.Lock()
+        self._use_system_tts_fallback = False
 
     def start(self, bus: EventBus, cfg=None) -> None:
         self._bus = bus
@@ -82,8 +84,10 @@ class Voice:
         try:
             from mlx_audio.tts import generate as _  # test import
             log.info(f"Kokoro TTS ready (voice: {config.KOKORO_VOICE})")
+            self._use_system_tts_fallback = False
         except ImportError:
             log.warning("mlx-audio TTS not available — voice will be silent")
+            self._use_system_tts_fallback = True
 
     def _on_speak(self, text: str = "") -> None:
         """Handle speak event — generate TTS and push to speaker."""
@@ -109,8 +113,18 @@ class Voice:
         """Generate TTS and push to camera speaker. Runs in a thread."""
         with self._lock:  # only one utterance at a time
             try:
+                gesture = self._infer_gesture_from_text(text)
+                if gesture:
+                    # Run PTZ gesture in parallel so movement overlaps speech.
+                    threading.Thread(
+                        target=self._run_ptz_gesture, args=(gesture,), daemon=True, name="ptz-gesture"
+                    ).start()
+
                 audio = self._generate_tts(text)
                 if not audio:
+                    if self._use_system_tts_fallback:
+                        if self._speak_with_system_tts(text):
+                            return
                     log.warning(f"TTS failed, would say: {text}")
                     self._bus.emit("speak_failed")
                     return
@@ -182,10 +196,116 @@ class Voice:
 
         except ImportError:
             log.warning("mlx-audio not available for TTS")
+            self._use_system_tts_fallback = True
             return None
         except Exception:
             log.exception("TTS generation error")
+            self._use_system_tts_fallback = True
             return None
+
+    def _speak_with_system_tts(self, text: str) -> bool:
+        """Fallback voice output using macOS built-in `say`."""
+        clean_text = " ".join(text.replace("\n", " ").split()).strip()
+        if not clean_text:
+            return False
+        try:
+            self._bus.emit("speaking_started")
+            result = subprocess.run(
+                ["say", clean_text],
+                capture_output=True,
+                timeout=30,
+            )
+            self._bus.emit("speaking_finished")
+            if result.returncode == 0:
+                log.info("System TTS fallback: played via macOS say")
+                return True
+            log.warning(f"System TTS fallback failed: {result.stderr.decode()[:120]}")
+            return False
+        except Exception:
+            log.exception("System TTS fallback error")
+            self._bus.emit("speaking_finished")
+            return False
+
+    def _infer_gesture_from_text(self, text: str) -> str | None:
+        """Return 'yes' or 'no' gesture for short binary answers."""
+        normalized = " ".join(text.strip().lower().split())
+        if not normalized:
+            return None
+
+        yes_prefixes = ("yes", "yeah", "yep", "correct", "exactly", "affirmative", "true")
+        no_prefixes = ("no", "nope", "nah", "negative", "incorrect", "false")
+
+        if normalized.startswith(yes_prefixes):
+            return "yes"
+        if normalized.startswith(no_prefixes):
+            return "no"
+
+        # LLM often responds like "The answer is yes/no...".
+        first_sentence = normalized.split(".", 1)[0]
+        yes_match = re.search(r"\b(yes|yeah|yep|affirmative|correct|true)\b", first_sentence)
+        no_match = re.search(r"\b(no|nope|nah|negative|incorrect|false)\b", first_sentence)
+        if yes_match and no_match:
+            return "yes" if yes_match.start() < no_match.start() else "no"
+        if yes_match:
+            return "yes"
+        if no_match:
+            return "no"
+        return None
+
+    def _run_ptz_gesture(self, gesture: str) -> None:
+        """Best-effort PTZ gesture using uvc-util CLI."""
+        uvc_paths = [
+            str(Path.home() / ".local" / "bin" / "uvc-util"),
+            "/usr/local/bin/uvc-util",
+            "/opt/homebrew/bin/uvc-util",
+            "uvc-util",
+        ]
+        uvc_bin = None
+        for p in uvc_paths:
+            try:
+                r = subprocess.run([p, "--version"], capture_output=True, timeout=2)
+                if r.returncode == 0:
+                    uvc_bin = p
+                    break
+            except Exception:
+                continue
+
+        if not uvc_bin:
+            return
+
+        # AVFoundation camera index follows startup scripts where PIXY is auto-detected.
+        cam_idx = str(config.USB_CAMERA_INDEX)
+        log.info(f"PTZ gesture: {gesture} (camera index {cam_idx})")
+        if gesture == "yes":
+            # Nod: center -> slight down -> slight up -> center
+            sequence = [
+                "{pan=0,tilt=0}",
+                "{pan=0,tilt=-43200}",
+                "{pan=0,tilt=43200}",
+                "{pan=0,tilt=0}",
+            ]
+        else:
+            # Shake: center -> left -> right -> center
+            sequence = [
+                "{pan=0,tilt=0}",
+                "{pan=-54000,tilt=0}",
+                "{pan=54000,tilt=0}",
+                "{pan=-36000,tilt=0}",
+                "{pan=36000,tilt=0}",
+                "{pan=0,tilt=0}",
+            ]
+
+        for value in sequence:
+            try:
+                subprocess.run(
+                    [uvc_bin, "-I", cam_idx, "-s", f"pan-tilt-abs={value}"],
+                    capture_output=True,
+                    timeout=3,
+                    check=False,
+                )
+                time.sleep(0.28)
+            except Exception:
+                return
 
     def _push_to_speaker(self, audio_bytes: bytes) -> None:
         """Play audio on Nate's Mac speakers via afplay.

@@ -10,6 +10,7 @@ The LLM call happens in the background — never blocks conversation.
 import base64
 import json
 import logging
+import subprocess
 import threading
 import time
 import urllib.request
@@ -34,6 +35,7 @@ class Vision:
         self._muted = False
         self._face_present = False
         self._consecutive_failures = 0
+        self._camera_open_logged = False
 
         # Scene description cache
         self._scene_description = ""
@@ -104,8 +106,8 @@ class Vision:
             return self._describe_interval_present
         return self._describe_interval_idle
 
-    def _capture_frame(self) -> bool:
-        """Capture one frame via Pi's go2rtc snapshot API."""
+    def _capture_frame_go2rtc(self) -> bool:
+        """Capture one frame via go2rtc snapshot API."""
         try:
             url = f"{config.GO2RTC_API}/api/frame.jpeg?src=merlin"
             resp = http_requests.get(url, timeout=5)
@@ -120,6 +122,57 @@ class Vision:
             if self._consecutive_failures <= 3 or self._consecutive_failures % 30 == 0:
                 log.debug(f"Frame capture failed ({self._consecutive_failures}x)")
             return False
+
+    def _capture_frame_usb(self) -> bool:
+        """Capture one frame from a local USB camera via AVFoundation."""
+        try:
+            # Use ffmpeg AVFoundation device indexing directly so we always
+            # capture from the same camera index detected at startup.
+            result = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "avfoundation",
+                    "-framerate",
+                    str(config.USB_CAMERA_FPS),
+                    "-video_size",
+                    f"{config.USB_CAMERA_WIDTH}x{config.USB_CAMERA_HEIGHT}",
+                    "-i",
+                    f"{config.USB_CAMERA_INDEX}:none",
+                    "-frames:v",
+                    "1",
+                    "-q:v",
+                    "3",
+                    str(config.FRAME_PATH),
+                    "-y",
+                ],
+                capture_output=True,
+                timeout=8,
+            )
+            if result.returncode != 0 or not config.FRAME_PATH.exists():
+                self._consecutive_failures += 1
+                return False
+
+            if not self._camera_open_logged:
+                log.info(f"Vision USB capture using AVFoundation index {config.USB_CAMERA_INDEX}")
+                self._camera_open_logged = True
+
+            self._consecutive_failures = 0
+            return True
+        except Exception:
+            self._consecutive_failures += 1
+            if self._consecutive_failures <= 3 or self._consecutive_failures % 30 == 0:
+                log.debug(f"USB frame capture failed ({self._consecutive_failures}x)")
+            return False
+
+    def _capture_frame(self) -> bool:
+        """Capture one frame from the configured vision source."""
+        if config.AUDIO_SOURCE == "usb":
+            return self._capture_frame_usb()
+        return self._capture_frame_go2rtc()
 
     def _describe_current_frame(self):
         """Send the current frame to LLM for scene description. Runs in background."""
@@ -137,7 +190,7 @@ class Vision:
             img_b64 = base64.b64encode(config.FRAME_PATH.read_bytes()).decode()
 
             body = json.dumps({
-                "model": config.LLM_MODEL,
+                "model": config.VISION_MODEL,
                 "messages": [
                     {"role": "system", "content": "Describe what you see in one sentence. Be factual and brief. /no_think"},
                     {"role": "user", "content": [
@@ -145,7 +198,7 @@ class Vision:
                         {"type": "text", "text": "What do you see?"},
                     ]}
                 ],
-                "max_tokens": 60,
+                "max_tokens": 300,
                 "temperature": 0.3,
                 "stream": False,
             }).encode()
@@ -160,6 +213,9 @@ class Vision:
                 result = json.loads(resp.read())
 
             text = result.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+            if "." in text:
+                # Keep the first sentence to avoid verbose visual monologues.
+                text = text.split(".", 1)[0].strip() + "."
             if text and len(text) > 5:
                 old = self._scene_description
                 self._scene_description = text
