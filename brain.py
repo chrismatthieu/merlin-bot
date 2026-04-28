@@ -79,6 +79,9 @@ INTENT_RULES = [
 def classify_intent(text: str) -> Intent:
     """Classify user intent from text. First match wins."""
     text_lower = text.lower().strip()
+    bot_name = config.BOT_NAME.lower()
+    if re.search(rf"\b(hey|hi|hello)\s+{re.escape(bot_name)}\b", text_lower):
+        return Intent.GREETING
     for intent, patterns in INTENT_RULES:
         for pattern in patterns:
             if re.search(pattern, text_lower):
@@ -278,9 +281,11 @@ def _save_capture(item: str):
 
 # ── System Prompt ────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are Merlin, an ambient AI companion on Operator's desk.
+SYSTEM_PROMPT = """You are {bot_name}, an ambient AI companion on Operator's desk.
 
-Character: King Rhoam from Breath of the Wild. Still, direct, curious, patient. The sage. He is the hero.
+Character: {bot_character}
+Persona: {bot_persona}
+Personality: {bot_personality}
 
 Voice rules:
 - One or two short sentences. Under 30 words total.
@@ -477,10 +482,12 @@ class Brain:
         # Extract message (strip wake word)
         message = text
         if has_wake:
-            for w in ["hey merlin,", "hey merlin", "hi merlin,", "hi merlin",
-                       "ok merlin,", "ok merlin", "merlin,", "merlin"]:
-                if text_lower.startswith(w):
-                    message = text[len(w):].strip()
+            wake_prefixes = []
+            for wake in sorted(config.WAKE_WORDS, key=len, reverse=True):
+                wake_prefixes.extend([f"{wake},", f"{wake}"])
+            for prefix in wake_prefixes:
+                if text_lower.startswith(prefix):
+                    message = text[len(prefix):].strip()
                     break
 
         if not message:
@@ -587,6 +594,10 @@ class Brain:
         intent_prompt = prompt_fn(hour)
 
         system = SYSTEM_PROMPT.format(
+            bot_name=config.BOT_NAME,
+            bot_character=config.BOT_CHARACTER,
+            bot_persona=config.BOT_PERSONA,
+            bot_personality=config.BOT_PERSONALITY,
             time=datetime.now().strftime("%I:%M %p"),
             intent_prompt=intent_prompt,
             phase=phase.name.lower().replace("_", " "),
@@ -782,13 +793,13 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG, format="[brain] %(message)s")
 
     bus = EventBus()
-    bus.on("speak", lambda text="", **kw: print(f'\n>>> MERLIN: "{text}"\n'))
+    bus.on("speak", lambda text="", **kw: print(f'\n>>> {config.BOT_NAME.upper()}: "{text}"\n'))
 
     brain = Brain()
     brain.start(bus)
 
     # Test conversation
-    print("Type messages to Merlin (prefix with 'Hey Merlin' or just type after first response):")
+    print(f"Type messages to {config.BOT_NAME} (prefix with 'Hey {config.BOT_NAME}' or just type after first response):")
     while True:
         try:
             user_input = input("You: ").strip()

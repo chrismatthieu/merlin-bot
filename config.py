@@ -1,12 +1,45 @@
 """Merlin v2 — All configuration in one place."""
 
 import os
+import re
 from pathlib import Path
 from dotenv import load_dotenv
 from requests.auth import HTTPDigestAuth
 
 # Load .env from RBOS root
 load_dotenv(Path(__file__).parent.parent / ".env")
+
+
+def _load_soul(path: Path) -> dict[str, str]:
+    """Load simple key/value config from soul.md."""
+    defaults = {
+        "name": "Merlin",
+        "character": "A playful, happy, curious desk companion.",
+        "persona": "Warm and observant; concise, grounded, and supportive.",
+        "personality": "Playful, happy, curious.",
+    }
+    if not path.exists():
+        return defaults
+
+    values = defaults.copy()
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = re.match(r"^([A-Za-z_]+)\s*:\s*(.+)$", line)
+        if not match:
+            continue
+        key = match.group(1).strip().lower()
+        value = match.group(2).strip()
+        if key in values and value:
+            values[key] = value
+    return values
+
+
+def _build_wake_words(name: str) -> list[str]:
+    base = name.strip().lower()
+    wake_words = [base, f"hey {base}", f"hi {base}", f"ok {base}"]
+    return list(dict.fromkeys(wake_words))
 
 # ── Network ──────────────────────────────────────────────────────
 PI_HOST = os.getenv("MERLIN_PI_HOST", "100.87.156.70")
@@ -69,9 +102,13 @@ VISION_INTERVAL_MUTED = 30
 VISION_PROMPT = "Briefly describe what you see at this desk. One sentence."
 
 # ── Conversation ─────────────────────────────────────────────────
-WAKE_WORDS = ["merlin", "hey merlin", "hi merlin", "ok merlin",
-              "erlin", "hey erlin", "i'm erlin", "murlin", "marlin",
-              "hey marlin", "berlin", "hey berlin"]  # whisper frequently mangles "Merlin"
+SOUL_PATH = Path(__file__).parent / "soul.md"
+SOUL = _load_soul(SOUL_PATH)
+BOT_NAME = SOUL["name"]
+BOT_CHARACTER = SOUL["character"]
+BOT_PERSONA = SOUL["persona"]
+BOT_PERSONALITY = SOUL["personality"]
+WAKE_WORDS = _build_wake_words(BOT_NAME)
 CONVERSATION_WINDOW = 60  # seconds after Merlin speaks before requiring wake word again
 CONVERSATION_HISTORY_SIZE = 10
 MUTE_WORDS = ["stop listening", "mute", "go to sleep"]

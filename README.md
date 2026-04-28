@@ -254,6 +254,7 @@ curl http://localhost:8900/health
 
 ```
 merlin-bot/
+  soul.md              # Bot identity: name, character, persona, personality
   start-merlin-ollama.sh   # macOS: Ollama + PIXY guard + env defaults
   start-tracker-pixy.sh    # macOS: tracker_usb.py with auto PIXY index
   main.py              # Orchestrator
