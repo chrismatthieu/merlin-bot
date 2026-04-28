@@ -11,30 +11,32 @@ Merlin is built as an executive functioning (EF) prosthetic for ADHD. It runs on
 Single Mac. No cloud. USB camera + local LLMs.
 
 ```
-EMEET PIXY (USB-C) ─── Video + Audio ───> Mac (M1 Max 32GB)
-                                            ├── tracker_usb.py  (OpenCV + YuNet face detection + UVC PTZ)
+EMEET PIXY (USB-C) ─── Video + Audio ───> Mac (Apple Silicon)
+                                            ├── tracker_usb.py  (YuNet + UVC PTZ; room scan when face lost)
                                             ├── audio_usb.py    (sounddevice mic capture)
-                                            ├── audio_pipeline   (Silero VAD + Whisper STT)
-                                            ├── brain.py         (LM Studio LLM + intent classifier)
-                                            ├── vision.py        (async scene descriptions via VLM)
-                                            ├── voice.py         (Kokoro TTS + afplay speaker)
-                                            └── main.py          (orchestrator + HTTP /health)
+                                            ├── audio_pipeline  (VAD + mlx-whisper STT; ffmpeg where needed)
+                                            ├── brain.py        (intent classifier; OpenAI-compatible LLM)
+                                            ├── vision.py       (ffmpeg/AVFoundation frames + MERLIN_VISION_MODEL)
+                                            ├── voice.py        (Kokoro TTS, macOS say fallback, PTZ yes/no gestures)
+                                            └── main.py         (orchestrator + HTTP :8900 /health)
 
 USB Speaker ◄──── afplay ────────────────── voice.py
 ```
+
+Chat and vision can use different models (for example **Ollama** `llama3.2:3b` for text and `qwen3-vl:2b` for scene description). See `start-merlin-ollama.sh` for defaults.
 
 | Module | File | What it does |
 |--------|------|-------------|
 | Orchestrator | `main.py` | Starts modules, supervises, restarts on crash, HTTP server |
 | Audio Pipeline | `audio_pipeline.py` | Mic capture (USB or RTSP), Silero VAD, Whisper STT |
 | Audio USB | `audio_usb.py` | Drop-in USB mic capture via sounddevice |
-| Voice | `voice.py` | Kokoro TTS, afplay speaker output |
-| Brain | `brain.py` | Intent classifier, conversation state machine, LM Studio LLM |
-| Vision | `vision.py` | Async frame capture + VLM scene description |
+| Voice | `voice.py` | Kokoro TTS with **macOS `say` fallback** if mlx-audio fails; afplay; PTZ nod/shake for yes/no/true/false; directional PTZ from voice (`look left`, etc.) |
+| Brain | `brain.py` | Intent classifier, state machine, OpenAI-compatible LLM (LM Studio or Ollama); prompts refer to the user as **Operator** |
+| Vision | `vision.py` | Async capture (USB: AVFoundation/ffmpeg) + VLM scene description via `MERLIN_VISION_MODEL` |
 | Event Bus | `event_bus.py` | In-process pub/sub connecting all modules |
 | Config | `config.py` | All settings, env var overrides |
-| Face Tracker | `tracker_usb.py` | YuNet face detection + UVC PTZ motor control |
-| PTZ Controller | `ptz_uvc.py` | libuvc ctypes wrapper for UVC pan/tilt/zoom |
+| Face Tracker | `tracker_usb.py` | YuNet face detection + UVC PTZ; **room scan** (multi-pass pan/tilt) when face is lost, with hysteresis and confidence gating |
+| PTZ Controller | `ptz_uvc.py` | libuvc ctypes wrapper; **uvc-util** CLI fallback if libuvc cannot open the device |
 | Camera Probe | `probe_camera.py` | Hardware detection and verification script |
 
 ### Agent Subsystem
@@ -62,12 +64,16 @@ brain.py v2 uses an intent-aware conversation architecture:
 5. **Command short-circuit** -- capture, time, remind bypass the LLM entirely
 6. **Conversation state machine** -- tracks phase (idle, greeted, working, winding down, venting) with time-based decay
 7. **Intent-specific prompting** -- each intent gets a tailored system prompt injection and token limit
-8. **LLM call** via OpenAI-compatible API (LM Studio) with assembled context:
+8. **LLM call** via OpenAI-compatible API (LM Studio, **Ollama** `/v1/chat/completions`, or any compatible server) with assembled context:
    - Character prompt (voice rules)
    - RBOS context (today's focus, energy, shift, schedule, shipped items)
    - Scene description (what the camera sees, pre-computed in background)
    - Conversation history (last 10 exchanges)
 9. **Response** emitted on the event bus, picked up by voice module
+
+**Operator:** In-app prompts and context describe the human at the desk as **Operator** (not a model name). For reliable yes/no **PTZ gestures**, the brain nudges very short binary answers to start with “Yes.”/“No.” or “True.”/“False.”.
+
+**Commands:** `COMMAND` intent includes phrases that move the camera (e.g. look left/right/up/down/around); these emit `ptz_action` for `voice.py` / PTZ.
 
 ### EF Prosthetic Modes
 
@@ -83,15 +89,16 @@ brain.py v2 uses an intent-aware conversation architecture:
 
 All models run locally. No API keys required for core operation.
 
-| Component | Model | Size | Purpose |
-|-----------|-------|------|---------|
-| LLM + Vision | Qwen3 VL 4B (LM Studio, MLX) | ~4-5 GB | Conversation + image understanding |
-| STT | Whisper Small (mlx-whisper) | ~0.5 GB | Speech to text |
-| TTS | Kokoro 82M (mlx-audio) | ~0.2 GB | Text to speech |
-| VAD | Silero VAD (torch) | ~0.1 GB | Voice activity detection |
-| Face Detection | YuNet (OpenCV) | ~2 MB | Face tracking |
+| Component | Model (examples) | Notes |
+|-----------|------------------|--------|
+| Chat LLM | `qwen/qwen3-vl-4b` (LM Studio), **`llama3.2:3b`** (Ollama) | `MERLIN_MODEL` — text + tool routing |
+| Vision / scene | Same multimodal model *or* dedicated VLM, e.g. **`qwen3-vl:2b`** (Ollama) | `MERLIN_VISION_MODEL` — what `vision.py` sends to the API |
+| STT | Whisper via **mlx-whisper** | Requires **ffmpeg** (e.g. `brew install ffmpeg`) on macOS |
+| TTS | Kokoro (mlx-audio) | Falls back to **macOS `say`** if Kokoro/mlx-audio errors |
+| VAD | Silero (torch) | Pipeline can fall back to RMS-based VAD if torch/VAD unavailable |
+| Face detection | **YuNet** ONNX | `models/face_detection_yunet_2023mar.onnx` |
 
-Total memory footprint: ~5-6 GB. Fits comfortably on a 32GB Apple Silicon Mac with plenty of headroom.
+Typical footprint depends on which chat/vision models you load; a split Ollama setup (small chat + small VLM) is lighter than a single large MLX vision LLM.
 
 **Model evaluation:** A custom eval harness (`tools/merlin-model-eval.py`) tests models across 5 tiers: speed, instruction following, context grounding, conversation quality, and vision. Qwen3 VL 4B scored 81% vs 8B's 80% — the 4B wins on speed with nearly identical quality.
 
@@ -111,12 +118,60 @@ Total memory footprint: ~5-6 GB. Fits comfortably on a 32GB Apple Silicon Mac wi
 
 ---
 
-## Setup
+## macOS: PIXY + Ollama (recommended demo path)
+
+Use this when the **EMEET PIXY** is the mic and camera and you want **local Ollama** instead of LM Studio.
+
+**Prerequisites**
+
+- [Ollama](https://ollama.com) running (`ollama serve`) with models pulled, e.g. `ollama pull llama3.2:3b` and `ollama pull qwen3-vl:2b`
+- **ffmpeg** on PATH (`brew install ffmpeg`) — STT-related tooling and AVFoundation device probing
+- **uvc-util** for reliable PTZ on some PIXY/macOS setups: build from [jtfrey/uvc-util](https://github.com/jtfrey/uvc-util) and install the binary to `~/.local/bin` (or PATH). `ptz_uvc.py` and `voice.py` also search common paths.
+- YuNet weights: `models/face_detection_yunet_2023mar.onnx`
+- Python 3.11+ with deps installed (venv or Conda — the repo scripts default to `PYTHON_BIN=/Users/.../miniconda3/envs/merlin311/bin/python`; override with `export PYTHON_BIN=...`)
+
+**Start Merlin** (refuses to start if PIXY is not listed by AVFoundation when `MERLIN_AUDIO_SOURCE=usb`):
+
+```bash
+./start-merlin-ollama.sh
+```
+
+**Start the USB face tracker** (second terminal; same PIXY index as detected from ffmpeg):
+
+```bash
+./start-tracker-pixy.sh
+```
+
+The tracker notifies the brain at `http://localhost:8900/event` for face arrived/lost.
+
+**Useful environment overrides** (see `config.py`):
+
+| Variable | Role |
+|----------|------|
+| `MERLIN_LLM_URL` | OpenAI-compatible chat URL (default Ollama: `http://localhost:11434/v1/chat/completions`) |
+| `MERLIN_MODEL` | Chat model id (default `llama3.2:3b`) |
+| `MERLIN_VISION_MODEL` | VLM for scene description (default `qwen3-vl:2b`) |
+| `MERLIN_AUDIO_SOURCE` | `usb` for PIXY on the same Mac |
+| `MERLIN_CAMERA_INDEX` | Video device index; start scripts usually set this from `ffmpeg -f avfoundation -list_devices` |
+
+**Restart / port 8900 in use:** If a previous Merlin did not exit cleanly, the HTTP server may fail with “address already in use”. Free the port and restart both processes:
+
+```bash
+lsof -nP -iTCP:8900 -sTCP:LISTEN   # note PID
+kill <pid>                         # or: pkill -f main.py
+./start-merlin-ollama.sh
+./start-tracker-pixy.sh
+curl -sS http://localhost:8900/health
+```
+
+---
+
+## Setup (generic)
 
 ### 1. Clone and create venv
 
 ```bash
-cd merlin
+cd merlin-bot
 python3 -m venv .venv
 source .venv/bin/activate
 ```
@@ -128,15 +183,21 @@ pip install mlx-audio mlx-whisper sounddevice requests python-dotenv opencv-pyth
 pip install torch  # for Silero VAD
 ```
 
-### 3. Install LM Studio + model
+Install **ffmpeg** separately (required on macOS for many audio/camera paths): `brew install ffmpeg`.
+
+### 3. LLM server
+
+**Option A — LM Studio**
 
 1. Download [LM Studio](https://lmstudio.ai) for Apple Silicon
 2. Search for and download `qwen/qwen3-vl-4b` (MLX format)
 3. Start the server (Developer tab → Start Server, port 1234)
 
-Alternative: Use any OpenAI-compatible local LLM server.
+**Option B — Ollama**
 
-### 4. Install libuvc (for PTZ control)
+Use `MERLIN_LLM_URL=http://localhost:11434/v1/chat/completions` and set `MERLIN_MODEL` / `MERLIN_VISION_MODEL` to pulled model names. The `start-merlin-ollama.sh` script sets sensible defaults.
+
+### 4. libuvc + PTZ
 
 ```bash
 brew install libusb cmake
@@ -145,6 +206,8 @@ cd /tmp/libuvc && mkdir build && cd build
 cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$HOME/.local ..
 make && make install
 ```
+
+If motor commands still fail, install **uvc-util** (see macOS section above).
 
 ### 5. Configure environment
 
@@ -162,14 +225,18 @@ python probe_camera.py
 ### 7. Run
 
 ```bash
-# Full system
+# Full system (after configuring LLM URL + models in env / .env)
 python main.py
+
+# macOS PIXY + Ollama convenience wrappers
+./start-merlin-ollama.sh
+./start-tracker-pixy.sh
 
 # Test audio only
 python audio_usb.py
 
 # Test face tracking only
-python tracker_usb.py
+MERLIN_CAMERA_INDEX=0 python tracker_usb.py
 
 # Agent REPL
 python agent/main.py
@@ -186,7 +253,9 @@ curl http://localhost:8900/health
 ## Project Structure
 
 ```
-merlin/
+merlin-bot/
+  start-merlin-ollama.sh   # macOS: Ollama + PIXY guard + env defaults
+  start-tracker-pixy.sh    # macOS: tracker_usb.py with auto PIXY index
   main.py              # Orchestrator
   audio_pipeline.py    # VAD + STT pipeline (source-agnostic)
   audio_usb.py         # USB mic capture via sounddevice
