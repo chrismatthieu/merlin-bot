@@ -583,21 +583,32 @@ class Brain:
             self._greeting_date = today
             self._fired_shift_cues = set()
 
+        did_startup_greet = False
         # Always greet once per app run on first face lock,
         # even if "greeted_today" was restored from persisted state.
         if not self._startup_face_greeted:
-            greeting = self._build_return_greeting()
+            # Use full time-of-day greeting for a fresh day, otherwise a
+            # slightly longer "return" line for app-start face lock.
+            greeting = (
+                self._build_arrival_greeting(hour)
+                if not self._greeted_today
+                else self._build_startup_face_greeting(hour)
+            )
             self._bus.emit("speak", text=greeting)
             self._startup_face_greeted = True
+            did_startup_greet = True
             log.info(f"Startup face greeting: {greeting}")
 
-        if not self._greeted_today:
+        if not self._greeted_today and not did_startup_greet:
             # First arrival today — explicit time-aware greeting with operator name.
             greeting = self._build_arrival_greeting(hour)
             self._bus.emit("speak", text=greeting)
             self._greeted_today = True
             self._state_machine.update(Intent.GREETING, hour)
             log.info(f"Greeted: {greeting}")
+        elif not self._greeted_today and did_startup_greet:
+            self._greeted_today = True
+            self._state_machine.update(Intent.GREETING, hour)
         elif self._last_face_lost_time > 0 and self._greeted_today and (now - self._last_seen_time) > 10:
             # Context recovery — only if genuinely returned (last seen > 60s ago)
             absence = now - self._last_face_lost_time
@@ -658,6 +669,26 @@ class Brain:
             f"Found you again, {operator}.",
             f"Ah, there you are, {operator}.",
             f"Back on radar, {operator}.",
+        ])
+
+    def _build_startup_face_greeting(self, hour: int) -> str:
+        operator = config.BOT_OPERATOR
+        if hour < 12:
+            return random.choice([
+                f"Good morning again, {operator}. There you are.",
+                f"Morning, {operator}. Eyes on.",
+                f"Good morning, {operator}. Back on radar.",
+            ])
+        if hour < 18:
+            return random.choice([
+                f"Good afternoon, {operator}. There you are.",
+                f"Afternoon, {operator}. I can see you now.",
+                f"Hey {operator}, afternoon. Back online with you.",
+            ])
+        return random.choice([
+            f"Good evening, {operator}. There you are.",
+            f"Evening, {operator}. I see you now.",
+            f"Good evening, {operator}. Back online and tracking.",
         ])
 
     def _on_face_lost(self, **kw) -> None:
