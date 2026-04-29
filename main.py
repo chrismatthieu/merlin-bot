@@ -289,6 +289,8 @@ def main():
 
     # Start all modules
     orch.start_all()
+    # Startup cue so boot completion is audible.
+    orch.bus.emit("speak_nonverbal", sound="ready")
 
     log.info("=" * 50)
     log.info("Merlin v2 — All modules running")

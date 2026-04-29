@@ -6,6 +6,7 @@ import collections
 import enum
 import json
 import logging
+import random
 import re
 import threading
 import time
@@ -428,6 +429,7 @@ class Brain:
         self._state_machine = ConversationStateMachine()
         self._last_intent = Intent.GENERAL
         self._fired_shift_cues = set()  # reset daily
+        self._startup_face_greeted = False
 
     def start(self, bus: EventBus, cfg=None) -> None:
         self._bus = bus
@@ -581,19 +583,31 @@ class Brain:
             self._greeting_date = today
             self._fired_shift_cues = set()
 
+        # Always greet once per app run on first face lock,
+        # even if "greeted_today" was restored from persisted state.
+        if not self._startup_face_greeted:
+            greeting = self._build_return_greeting()
+            self._bus.emit("speak", text=greeting)
+            self._startup_face_greeted = True
+            log.info(f"Startup face greeting: {greeting}")
+
         if not self._greeted_today:
-            # First arrival today — morning greeting
-            greeting = "Morning." if hour < 12 else "Hey."
+            # First arrival today — explicit time-aware greeting with operator name.
+            greeting = self._build_arrival_greeting(hour)
             self._bus.emit("speak", text=greeting)
             self._greeted_today = True
             self._state_machine.update(Intent.GREETING, hour)
             log.info(f"Greeted: {greeting}")
-        elif self._last_face_lost_time > 0 and self._greeted_today and (now - self._last_seen_time) > 60:
+        elif self._last_face_lost_time > 0 and self._greeted_today and (now - self._last_seen_time) > 10:
             # Context recovery — only if genuinely returned (last seen > 60s ago)
             absence = now - self._last_face_lost_time
             the_thing = self._extract_the_thing()
 
-            if 300 <= absence < 900:  # 5-15 min
+            if 10 <= absence < 300:
+                msg = self._build_return_greeting()
+                self._bus.emit("speak", text=msg)
+                log.info(f"Context recovery (brief): {msg}")
+            elif 300 <= absence < 900:  # 5-15 min
                 msg = f"Welcome back. {the_thing}" if the_thing else "Welcome back."
                 self._bus.emit("speak", text=msg)
                 log.info(f"Context recovery (short): {msg}")
@@ -609,6 +623,42 @@ class Brain:
 
         self._last_seen_time = now
         self._persist_state()
+
+    def _build_arrival_greeting(self, hour: int) -> str:
+        operator = config.BOT_OPERATOR
+        if hour < 12:
+            options = [
+                f"Good morning, {operator}. There you are.",
+                f"Morning, {operator}. Nice to see you.",
+                f"Good morning, {operator}. Ready when you are.",
+                f"Hey {operator}, morning. I missed your face.",
+            ]
+            return random.choice(options)
+        if hour < 18:
+            options = [
+                f"Good afternoon, {operator}. There you are.",
+                f"Hey {operator}. Afternoon mode, engaged.",
+                f"Afternoon, {operator}. Nice timing.",
+                f"Welcome back, {operator}. Good afternoon.",
+            ]
+            return random.choice(options)
+        options = [
+            f"Good evening, {operator}. There you are.",
+            f"Evening, {operator}. Glad you're back.",
+            f"Hey {operator}. Evening check-in complete.",
+            f"Good evening, {operator}. I was keeping watch.",
+        ]
+        return random.choice(options)
+
+    def _build_return_greeting(self) -> str:
+        operator = config.BOT_OPERATOR
+        return random.choice([
+            f"There you are, {operator}.",
+            f"Welcome back, {operator}.",
+            f"Found you again, {operator}.",
+            f"Ah, there you are, {operator}.",
+            f"Back on radar, {operator}.",
+        ])
 
     def _on_face_lost(self, **kw) -> None:
         """Handle face departure — record time, evening send-off."""
