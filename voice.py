@@ -101,15 +101,21 @@ class Voice:
 
     def _on_speak_nonverbal(self, sound: str = "") -> None:
         """Play a pre-recorded sound file."""
+        if not config.NONVERBAL_ENABLED:
+            return
         if not sound:
             return
-        sound_path = config.SOUNDS_DIR / f"{sound}.mp3"
-        if sound_path.exists():
-            threading.Thread(
-                target=self._play_file, args=(sound_path,), daemon=True, name="nonverbal"
-            ).start()
-        else:
-            log.warning(f"Sound not found: {sound_path}")
+        candidates = [
+            config.SOUNDS_DIR / f"{sound}.mp3",
+            config.SOUNDS_DIR / f"{sound}.wav",
+        ]
+        sound_path = next((p for p in candidates if p.exists()), None)
+        if sound_path is None:
+            log.warning(f"Sound not found: {candidates[0]} or {candidates[1]}")
+            return
+        threading.Thread(
+            target=self._play_file, args=(sound_path,), daemon=True, name="nonverbal"
+        ).start()
 
     def _on_ptz_action(self, action: str = "") -> None:
         """Handle explicit PTZ movement commands from brain."""
@@ -143,6 +149,7 @@ class Voice:
                 self._bus.emit("speaking_started")
                 self._push_to_speaker(audio)  # afplay blocks until done
                 self._bus.emit("speaking_finished")
+                self._bus.emit("speak_nonverbal", sound="ready")
 
             except Exception:
                 log.exception("Speak error")
@@ -153,9 +160,14 @@ class Voice:
         """Play a pre-recorded file through the camera speaker."""
         with self._lock:
             try:
-                audio = path.read_bytes()
                 self._bus.emit("speaking_started")
-                self._push_to_speaker(audio)  # afplay blocks until done
+                result = subprocess.run(
+                    ["afplay", str(path)],
+                    capture_output=True,
+                    timeout=30,
+                )
+                if result.returncode != 0:
+                    log.warning(f"afplay failed for {path.name}: {result.stderr.decode()[:100]}")
                 self._bus.emit("speaking_finished")
             except Exception:
                 log.exception(f"Play file error: {path}")

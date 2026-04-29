@@ -83,11 +83,11 @@ class State:
     TRACKING = "tracking"
     ATTENTIVE = "attentive"
     SEARCHING = "searching"
-    SEEKING = "seeking"        # proactive "Hey, Ezra" search — the North Star behavior
+    SEEKING = "seeking"        # proactive "Hey, Chris" search — the North Star behavior
     IDLE = "idle"
 
 # Seeking config
-SEEK_INTERVAL = 999999         # disabled — Ezra finds proactive seeking annoying
+SEEK_INTERVAL = 999999         # disabled — Chris finds proactive seeking annoying
 SEEK_PAN_POSITIONS = [         # sweep positions in degrees (systematic room scan)
     (0, 0),                    # center
     (-40, 0),                  # left
@@ -259,18 +259,18 @@ def play_sound_blocking(name):
 
 def do_seek(cap, yunet):
     """
-    The North Star behavior: "Hey, Ezra."
+    The North Star behavior: "Hey, Chris."
 
     Systematically scan the room looking for a face.
-    If found → lock on, say "Hey, Ezra. There you are."
-    If not found → say "Hey, Ezra? I can't find you."
+    If found → lock on, say "Hey, Chris. There you are."
+    If not found → say "Hey, Chris? I can't find you."
 
     Returns True if face was found, False if not.
     """
     global pan, tilt, state, tracking_start, last_seek, sx, sy
     last_seek = time.monotonic()
 
-    print("[tracker] SEEKING — looking for Ezra...")
+    print("[tracker] SEEKING — looking for Chris...")
 
     for pos_pan_deg, pos_tilt_deg in SEEK_PAN_POSITIONS:
         if not running:
@@ -319,7 +319,7 @@ def do_seek(cap, yunet):
         print(f"[tracker] seek: ({pos_pan_deg}°, {pos_tilt_deg}°) — no face")
 
     # Full sweep done, no face found
-    print("[tracker] SEEK COMPLETE — Ezra not found")
+    print("[tracker] SEEK COMPLETE — Chris not found")
     ease_to(0, 0, steps=8, pause=0.03)
     pan, tilt = 0, 0
 
@@ -474,7 +474,7 @@ def save_snapshot(frame):
         cv2.imwrite(SNAPSHOT_PATH, frame)
         _last_snapshot = now
 
-print('[tracker] Merlin tracker online. "Hey, Ezra" behavior loaded.')
+print('[tracker] Merlin tracker online. "Hey, Chris" behavior loaded.')
 print(f'[tracker] Track: {TRACKING_DURATION}s | Linger: {LINGER_DURATION}s | Seek every: {SEEK_INTERVAL}s | Breathing: {BREATHING_AMPLITUDE}°')
 if _record_file:
     dur = f'{_args.record_duration}s' if _args.record_duration else 'manual stop'
@@ -670,7 +670,7 @@ try:
             if state == State.IDLE:
                 idle_duration = now - idle_start if idle_start else 0
 
-                # "Hey, Ezra" — proactive face search (the North Star)
+                # "Hey, Chris" — proactive face search (the North Star)
                 if (now - last_seek) > SEEK_INTERVAL:
                     state = State.SEEKING
                     found = do_seek(cap, yunet)

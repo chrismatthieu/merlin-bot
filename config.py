@@ -14,6 +14,7 @@ def _load_soul(path: Path) -> dict[str, str]:
     """Load simple key/value config from soul.md."""
     defaults = {
         "name": "Merlin",
+        "operator": "User",
         "character": "A playful, happy, curious desk companion.",
         "persona": "Warm and observant; concise, grounded, and supportive.",
         "personality": "Playful, happy, curious.",
@@ -86,6 +87,7 @@ ECHO_SUPPRESSION_PADDING = 0.5   # USB path is much shorter than RTSP (was 1.5s)
 
 # ── TTS ──────────────────────────────────────────────────────────
 KOKORO_VOICE = os.getenv("MERLIN_VOICE", "am_fenrir")  # nerdy sage in a security camera body
+NONVERBAL_ENABLED = os.getenv("MERLIN_NONVERBAL", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 # ── USB Camera (EMEET PIXY) ─────────────────────────────────────
 USB_CAMERA_INDEX = int(os.getenv("MERLIN_CAMERA_INDEX", "0"))
@@ -105,6 +107,7 @@ VISION_PROMPT = "Briefly describe what you see at this desk. One sentence."
 SOUL_PATH = Path(__file__).parent / "soul.md"
 SOUL = _load_soul(SOUL_PATH)
 BOT_NAME = SOUL["name"]
+BOT_OPERATOR = SOUL["operator"]
 BOT_CHARACTER = SOUL["character"]
 BOT_PERSONA = SOUL["persona"]
 BOT_PERSONALITY = SOUL["personality"]

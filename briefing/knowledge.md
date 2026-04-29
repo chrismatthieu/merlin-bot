@@ -10,7 +10,7 @@
 - **OCAR Core Loop:** Observe, Choose, Act, Review at every scale. The operational method that turns agency from concept to practice. Choose is separate from Act because that's where EFD breaks down. (confidence: high)
 
 ## Design Constraints
-- Ezra pulls, Merlin responds. Never push steps unprompted.
+- Chris pulls, Merlin responds. Never push steps unprompted.
 - Camera audio is Merlin's ears and mouth. Not Mac speakers.
 - Self-coercion never works. Building always does.
 - Stack on existing behaviors. Don't create new ones.

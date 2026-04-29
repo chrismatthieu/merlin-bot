@@ -6,7 +6,7 @@
 
 ## Fiction
 
-Merlin is a small, warm, wooden creature on Ezra's desk. His sounds come from his body — the camera speaker. Never from Mac speakers, never from Bluetooth. If sound doesn't come from where his eyes are, the fiction breaks.
+Merlin is a small, warm, wooden creature on Chris's desk. His sounds come from his body — the camera speaker. Never from Mac speakers, never from Bluetooth. If sound doesn't come from where his eyes are, the fiction breaks.
 
 ## Source
 
@@ -144,4 +144,4 @@ HUSHED
 ---
 
 *"Tiny, no reverb, wooden, not harsh or metallic. All from the same family, like a voice."*
-*— Ezra, April 7, 2026*
+*— Chris, April 7, 2026*

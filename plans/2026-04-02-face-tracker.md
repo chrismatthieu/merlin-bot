@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a standalone face-tracking process that keeps Ezra centered in the camera frame using proven ONVIF PTZ control.
+**Goal:** Build a standalone face-tracking process that keeps Chris centered in the camera frame using proven ONVIF PTZ control.
 
 **Architecture:** Frigate-style move-and-wait loop. No PID controller. Calculate face offset from frame center → send ONVIF RelativeMove in FOV space → poll GetStatus until motor is IDLE → repeat. Camera's own motor controller handles motion smoothing. Separate process from brain/senses.
 
@@ -94,7 +94,7 @@ Expected: Camera returns to home position
 - [ ] **Step 5: Test face detection on a single RTSP frame**
 
 Run: `ssh pi "python3 -c 'from tracker import *; print(detect_face_from_stream())'"`
-Expected: Tuple like (0.55, 0.42) if Ezra is visible, None if not
+Expected: Tuple like (0.55, 0.42) if Chris is visible, None if not
 
 ---
 
@@ -161,7 +161,7 @@ IDLE after 0.2s at (0.50, 0.41)
 (centered, no move)
 ```
 
-- [ ] **Step 11: Ezra watches camera behavior and reports**
+- [ ] **Step 11: Chris watches camera behavior and reports**
 
 - [ ] **Step 12: Commit**
 

@@ -39,7 +39,7 @@ Merlin's job is not to orchestrate the morning. Merlin watches the clock and the
 | Before 7am | Sleep window | No gate logic. Silent. |
 | 7:00am | Window opens | Gates initialize as open (incomplete). |
 | 7:00–7:30am | Early window | Presence-only. No prompting. Let him move. |
-| 7:30am | First check | Gentle — only if Merlin sees Ezra (face/person detected) |
+| 7:30am | First check | Gentle — only if Merlin sees Chris (face/person detected) |
 | 8:15am | Mid check | Firmer — any open gates get named |
 | 8:45am | Urgent | All open gates named. One shot. |
 | 9:00am | Gate closes | Log result. Transition to day mode. Done. |
@@ -49,7 +49,7 @@ Merlin's job is not to orchestrate the morning. Merlin watches the clock and the
 ## Escalation Tiers
 
 ### Tier 1 — 7:30am (Gentle)
-Trigger only if Ezra is at desk AND at least one gate is open.
+Trigger only if Chris is at desk AND at least one gate is open.
 
 One gate open: say nothing. He's moving, let him move.
 Two gates open: one soft prompt.
@@ -60,10 +60,10 @@ Examples (King Rhoam voice — under 30 words, direct, not warm):
 - "Still early. Meds when you're ready."
 - "Two gates left. No rush yet."
 
-If Ezra confirms a gate during or after: acknowledge once, close it.
+If Chris confirms a gate during or after: acknowledge once, close it.
 
 ### Tier 2 — 8:15am (Firmer)
-Trigger if Ezra is at desk AND 1+ gates open.
+Trigger if Chris is at desk AND 1+ gates open.
 
 Name the specific open gates. Don't soften it, but don't repeat more than once.
 
@@ -77,8 +77,8 @@ Wait for confirmation. If he confirms, close the gate, say nothing further.
 ### Tier 3 — 8:45am (Urgent)
 Trigger regardless of desk presence. This is the last call.
 
-If Ezra is at desk: speak directly.
-If Ezra is absent: use a push notification (future) or log it. Don't shout into an empty room.
+If Chris is at desk: speak directly.
+If Chris is absent: use a push notification (future) or log it. Don't shout into an empty room.
 
 Examples:
 - "8:45. Meds. Now."
@@ -186,24 +186,24 @@ No praise. No "Great job!" He's not a dog. He's a person who did the basic thing
 
 Merlin does not prompt into an empty room.
 
-- **Tier 1 (7:30am):** Only fires if Ezra is at desk (person detected via HOG).
-- **Tier 2 (8:15am):** Only fires if Ezra is at desk.
+- **Tier 1 (7:30am):** Only fires if Chris is at desk (person detected via HOG).
+- **Tier 2 (8:15am):** Only fires if Chris is at desk.
 - **Tier 3 (8:45am):** Fires regardless. This is the last call. If absent: log only. If present: speak.
 
-When Ezra arrives at desk after an absence during the morning window, Merlin does NOT replay missed tiers. He checks current gate state and time, and uses the appropriate tier for current time. No catch-up lectures.
+When Chris arrives at desk after an absence during the morning window, Merlin does NOT replay missed tiers. He checks current gate state and time, and uses the appropriate tier for current time. No catch-up lectures.
 
 ---
 
 ## First Sight Behavior
 
-When Merlin first sees Ezra in the morning (face_arrived after overnight absence):
+When Merlin first sees Chris in the morning (face_arrived after overnight absence):
 
 Standard greeting from brain.py: "Morning."
 
 Then — if 7:30am or later AND any gates open — **immediate gate check** instead of waiting for the next scheduled tier. Don't wait 20 minutes to tell him what's open.
 
 Example:
-- 8:10am, Ezra sits down, face detected
+- 8:10am, Chris sits down, face detected
 - Merlin: "Morning. Meds and food still open. 50 minutes."
 
 Conversational, not alarming. State the facts. Let him respond.
@@ -222,25 +222,25 @@ The gate system wins because:
 1. **Order doesn't matter.** Shower at 7:15 or 8:50 — same gate, same result.
 2. **Partial credit is real.** Two gates closed = real progress, not failure.
 3. **The window is wide.** 7–9am is 2 hours. A flexible 2-hour window beats a rigid 8:30am ritual.
-4. **Merlin tracks, Ezra does.** No self-report required. Just say it when you do it.
+4. **Merlin tracks, Chris does.** No self-report required. Just say it when you do it.
 5. **Missing the window isn't shame.** It's logged. Patterns emerge. Adjustments happen later.
 
 ---
 
 ## Edge Cases
 
-**Ezra explicitly says he's not doing one:**
+**Chris explicitly says he's not doing one:**
 - "I'm skipping breakfast today" → close `gate_food` as `skipped` (not `closed`). Logged differently. No repeat prompt.
 - "Not taking meds today" → close `gate_meds` as `skipped`. No argument. His call.
 
-**Ezra already confirmed a gate yesterday:**
+**Chris already confirmed a gate yesterday:**
 - Gates reset at midnight. Every morning starts fresh. No carry-over.
 
 **Weekend / no-schedule day:**
 - Gate window still runs (7–9am). Behavior identical.
 - Future: config flag to widen window to 10am on weekends.
 
-**Ezra mutes Merlin during morning:**
+**Chris mutes Merlin during morning:**
 - morning.py queues any tier prompts. On unmute: if still within window and still relevant, deliver once. If past 9am, discard.
 
 **Merlin restarts mid-morning:**

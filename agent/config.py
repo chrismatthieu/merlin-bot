@@ -16,7 +16,7 @@ REQUEST_TIMEOUT = 120  # seconds — Gemma 27B can take 30-60s for complex reaso
 MAX_FILE_CHARS = 10000  # truncation limit for read_file tool
 
 # System prompt
-SYSTEM_PROMPT = """You are an RBOS agent running on Ezra's Mac. You have tools to:
+SYSTEM_PROMPT = """You are an RBOS agent running on Chris's Mac. You have tools to:
 - Read and write files in the RBOS filesystem
 - Read and send iMessages
 - Read and write Apple Notes

@@ -90,7 +90,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.merlin.brain.plist
 **Prereq:** Grant Full Disk Access to `/Users/ezradrake/Documents/RBOS/merlin/.venv/bin/python3` in System Settings.
 
 ### 8. iCloud Sync Lag for Code Changes
-**Symptom:** Code edited on Ezra's Mac doesn't appear on Nate's Mac for minutes. Had to manually SCP files.
+**Symptom:** Code edited on Chris's Mac doesn't appear on Nate's Mac for minutes. Had to manually SCP files.
 **Workaround:** After editing code, push directly: `cat merlin/file.py | ssh ezradrake@nates-m1-max.lan 'cat > ~/Documents/RBOS/merlin/file.py'`
 **Better fix:** Consider a post-edit script or rsync trigger. Or just always SCP after edits.
 
@@ -157,7 +157,7 @@ merlin/
 
 ---
 
-*"You are Ezra. What does that mean for the build?"*
+*"You are Chris. What does that mean for the build?"*
 *— Merlin's first real conversation, April 3, 2026*
 
 ## Organon Concepts

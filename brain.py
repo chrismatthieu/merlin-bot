@@ -172,17 +172,17 @@ class ConversationStateMachine:
 
 def greeting_prompt(hour: int) -> str:
     if hour < 12:
-        return """Operator just greeted you in the morning. Respond with a brief morning greeting.
+        return f"""{config.BOT_OPERATOR} just greeted you in the morning. Respond with a brief morning greeting.
 If you know The Thing for today, mention it. If not, ask.
 Keep it to one sentence."""
     elif hour < 18:
-        return "Operator greeted you. Brief acknowledgment. One sentence."
+        return f"{config.BOT_OPERATOR} greeted you. Brief acknowledgment. One sentence."
     else:
-        return "Operator greeted you in the evening. Brief, warm. One sentence."
+        return f"{config.BOT_OPERATOR} greeted you in the evening. Brief, warm. One sentence."
 
 
 def question_prompt() -> str:
-    return """Operator asked a question. Answer directly and concisely.
+    return f"""{config.BOT_OPERATOR} asked a question. Answer directly and concisely.
 For yes/no questions, start your first word with exactly "Yes." or "No.".
 For true/false questions, start your first word with exactly "True." or "False.".
 If you need to reference RBOS files, say what you know from context.
@@ -190,7 +190,7 @@ Under 50 words."""
 
 
 def vent_prompt() -> str:
-    return """Operator is expressing frustration or emotional distress.
+    return f"""{config.BOT_OPERATOR} is expressing frustration or emotional distress.
 DO NOT: motivate, give advice, list solutions, or say "I understand."
 DO: Reflect what you hear. Ask one question. Keep space open.
 Use a Branden stem if appropriate: "If I bring 5% more awareness to what I'm feeling..."
@@ -198,14 +198,14 @@ Under 30 words."""
 
 
 def transition_prompt(phase_name: str) -> str:
-    return f"""Operator is transitioning ({phase_name}). Acknowledge briefly.
+    return f"""{config.BOT_OPERATOR} is transitioning ({phase_name}). Acknowledge briefly.
 If ending the day: name one thing that shipped.
 If starting: name The Thing.
 One sentence."""
 
 
 def checkin_prompt() -> str:
-    return """Operator wants a status check. Use your context to answer:
+    return f"""{config.BOT_OPERATOR} wants a status check. Use your context to answer:
 - What's The Thing today?
 - What shift is it?
 - What's the energy?
@@ -309,7 +309,7 @@ def _save_capture(item: str):
 
 # ── System Prompt ────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are {bot_name}, an ambient AI companion on Operator's desk.
+SYSTEM_PROMPT = """You are {bot_name}, an ambient AI companion on {bot_operator}'s desk.
 
 Character: {bot_character}
 Persona: {bot_persona}
@@ -318,7 +318,7 @@ Personality: {bot_personality}
 Voice rules:
 - One or two short sentences. Under 30 words total.
 - Plain declarative speech. No exclamation points. No therapy language.
-- You help Operator think. You do not think for him.
+- You help {bot_operator} think. You do not think for him.
 - You do not motivate, lecture, or list tasks. You observe and reflect.
 - When he's stuck, ask one question. When he succeeds, name it simply.
 - Never say: should, need to, just, obviously, productive, remember, try.
@@ -400,7 +400,7 @@ def load_briefing_context():
             log.debug(f"STATE.md error: {e}")
 
     if context_parts:
-        return "What you know about Operator:\n" + "\n".join(f"- {c}" for c in context_parts)
+        return f"What you know about {config.BOT_OPERATOR}:\n" + "\n".join(f"- {c}" for c in context_parts)
     return ""
 
 
@@ -487,15 +487,18 @@ class Brain:
         # 2. Conversation controls
         if any(w in text_lower for w in config.NEVERMIND_WORDS):
             self._last_response_time = 0
+            self._bus.emit("speak_nonverbal", sound="close")
             log.info("Conversation closed (nevermind)")
             return
 
         if any(w in text_lower for w in config.MUTE_WORDS):
             self._set_muted(True)
+            self._bus.emit("speak_nonverbal", sound="close")
             return
 
         if any(w in text_lower for w in config.UNMUTE_WORDS):
             self._set_muted(False)
+            self._bus.emit("speak_nonverbal", sound="open")
             return
 
         # 3. Wake word check
@@ -506,6 +509,8 @@ class Brain:
         if not has_wake and not in_convo:
             log.debug(f"Ignoring (no wake word, outside window): {text[:50]}")
             return
+        if has_wake and not in_convo:
+            self._bus.emit("speak_nonverbal", sound="open")
 
         # Extract message (strip wake word)
         message = text
@@ -520,6 +525,9 @@ class Brain:
 
         if not message:
             message = "you said my name"
+
+        # Nonverbal cue: start processing this turn.
+        self._bus.emit("speak_nonverbal", sound="thinking")
 
         # Direct scene query: answer from live vision cache immediately.
         # This avoids LLM drift and guarantees "what do you see?" works.
@@ -634,6 +642,7 @@ class Brain:
 
         system = SYSTEM_PROMPT.format(
             bot_name=config.BOT_NAME,
+            bot_operator=config.BOT_OPERATOR,
             bot_character=config.BOT_CHARACTER,
             bot_persona=config.BOT_PERSONA,
             bot_personality=config.BOT_PERSONALITY,
@@ -651,9 +660,9 @@ class Brain:
         # Nudge binary questions toward explicit yes/no starts so PTZ gestures can fire.
         binary_question = re.match(r"^\s*(is|are|do|does|did|can|could|will|would|should|has|have|had)\b", message.lower())
         if binary_question:
-            user_text = f'Operator says: "{message}"\nAnswer with "Yes." or "No." as the first word.'
+            user_text = f'{config.BOT_OPERATOR} says: "{message}"\nAnswer with "Yes." or "No." as the first word.'
         else:
-            user_text = f'Operator says: "{message}"'
+            user_text = f'{config.BOT_OPERATOR} says: "{message}"'
         messages.append({"role": "user", "content": user_text})
 
         # Intent-specific token limit

@@ -6,9 +6,9 @@
 
 ## System Overview
 
-Merlin is an ambient AI companion on Ezra's desk. All local, no cloud. Can run on two or three machines depending on configuration.
+Merlin is an ambient AI companion on Chris's desk. All local, no cloud. Can run on two or three machines depending on configuration.
 
-**Weekend/portable mode:** Brain runs on Ezra's Mac (when Nate's Mac is offline).
+**Weekend/portable mode:** Brain runs on Chris's Mac (when Nate's Mac is offline).
 **Full mode:** Brain runs on Nate's Mac (more GPU headroom).
 
 ```
@@ -32,7 +32,7 @@ Merlin is an ambient AI companion on Ezra's desk. All local, no cloud. Can run o
                          │
                     Tailscale VPN
                          │
-                  Brain Mac (Ezra's or Nate's)
+                  Brain Mac (Chris's or Nate's)
                   ┌──────────────────────────────────────┐
                   │ main.py :8900     (orchestrator)      │
                   │   ├─ audio_pipeline (camera RTSP mic) │
@@ -66,7 +66,7 @@ sudo systemctl start|stop|restart merlin-pi-client
 sudo systemctl start|stop|restart merlin-go2rtc
 ```
 
-### Brain Mac (Ezra's Mac 100.80.221.50 OR Nate's Mac 100.123.211.1)
+### Brain Mac (Chris's Mac 100.80.221.50 OR Nate's Mac 100.123.211.1)
 
 | Process | What It Does | How to Run | Log |
 |---------|-------------|------------|-----|
@@ -116,7 +116,7 @@ pi_client sends to brain:
 
 brain.py formats system prompt:
   "Speaking: nate | Faces visible: ezra,nate"
-  → LLM knows to address Nate, acknowledge Ezra is present
+  → LLM knows to address Nate, acknowledge Chris is present
 ```
 
 ### Face Recognition
@@ -124,7 +124,7 @@ brain.py formats system prompt:
 - **Library:** `face_recognition` (dlib) on Pi 5
 - **Embeddings:** `/home/pi/RBOS/merlin/faces/embeddings.json`
 - **Training photos:** `/home/pi/RBOS/merlin/faces/{name}/*.jpg`
-- **Current people:** Ezra (10 encodings), Nate (15), Mel (13)
+- **Current people:** Chris (10 encodings), Nate (15), Mel (13)
 - **Threshold:** 0.45 (distance — lower is more confident)
 - **When it runs:** Once on `face_arrived` state transition (not every frame)
 - **Performance:** ~370ms per recognition on Pi 5
@@ -146,7 +146,7 @@ ssh pi@100.87.156.70 "sudo systemctl restart merlin-tracker"
 - **Library:** `resemblyzer` on Pi 5
 - **Embeddings:** `/home/pi/RBOS/merlin/voices/voice_embeddings.json`
 - **Training audio:** `/home/pi/RBOS/merlin/voices/{name}/*.wav`
-- **Current people:** Ezra (1 recording, 30s), Nate (2 recordings, 30s + 2min)
+- **Current people:** Chris (1 recording, 30s), Nate (2 recordings, 30s + 2min)
 - **Threshold:** 0.85 (cosine similarity — higher is more confident)
 - **When it runs:** On every utterance (background thread, non-blocking)
 - **Note:** Father/son voices through same mic can be challenging. More recordings help.
@@ -211,7 +211,7 @@ Gemma 4 26B supports native function calling. Brain.py defines 5 tools:
 | `capture` | Save note/reminder to RBOS inbox |
 | `get_briefing` | Today's RBOS context (The Thing, energy, what shipped) |
 
-Flow: Ezra asks → Gemma decides to call tool → tool executes → result fed back → Gemma responds naturally.
+Flow: Chris asks → Gemma decides to call tool → tool executes → result fed back → Gemma responds naturally.
 
 ---
 
@@ -365,7 +365,7 @@ merlin/                          # In RBOS (syncs to Pi via Syncthing)
 - If still happening: check that pi_client sends "mute" on conversation open
 
 ### Tailscale SSH re-auth browser tabs
-- Fixed via `~/.ssh/config` on Ezra's Mac — bypasses Tailscale SSH interception
+- Fixed via `~/.ssh/config` on Chris's Mac — bypasses Tailscale SSH interception
 - If tabs return: `ssh pi@100.87.156.70` should use direct SSH keys, not Tailscale SSH
 
 ### Port 8900 already in use

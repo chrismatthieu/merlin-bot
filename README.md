@@ -31,7 +31,7 @@ Chat and vision can use different models (for example **Ollama** `llama3.2:3b` f
 | Audio Pipeline | `audio_pipeline.py` | Mic capture (USB or RTSP), Silero VAD, Whisper STT |
 | Audio USB | `audio_usb.py` | Drop-in USB mic capture via sounddevice |
 | Voice | `voice.py` | Kokoro TTS with **macOS `say` fallback** if mlx-audio fails; afplay; PTZ nod/shake for yes/no/true/false; directional PTZ from voice (`look left`, etc.) |
-| Brain | `brain.py` | Intent classifier, state machine, OpenAI-compatible LLM (LM Studio or Ollama); prompts refer to the user as **Operator** |
+| Brain | `brain.py` | Intent classifier, state machine, OpenAI-compatible LLM (LM Studio or Ollama); prompts refer to the user by the `operator` value in `soul.md` |
 | Vision | `vision.py` | Async capture (USB: AVFoundation/ffmpeg) + VLM scene description via `MERLIN_VISION_MODEL` |
 | Event Bus | `event_bus.py` | In-process pub/sub connecting all modules |
 | Config | `config.py` | All settings, env var overrides |
@@ -71,9 +71,21 @@ brain.py v2 uses an intent-aware conversation architecture:
    - Conversation history (last 10 exchanges)
 9. **Response** emitted on the event bus, picked up by voice module
 
-**Operator:** In-app prompts and context describe the human at the desk as **Operator** (not a model name). For reliable yes/no **PTZ gestures**, the brain nudges very short binary answers to start with “Yes.”/“No.” or “True.”/“False.”.
+**User identity:** In-app prompts and context describe the human at the desk using `operator` from `soul.md` (currently **Chris**). For reliable yes/no **PTZ gestures**, the brain nudges very short binary answers to start with “Yes.”/“No.” or “True.”/“False.”.
 
 **Commands:** `COMMAND` intent includes phrases that move the camera (e.g. look left/right/up/down/around); these emit `ptz_action` for `voice.py` / PTZ.
+
+### Voice Command Phrases (from `config.py`)
+
+These phrases are configured in `config.py` and are matched by the conversation/audio flow:
+
+- **Wake words** (`WAKE_WORDS`): auto-generated from `name` in `soul.md`.
+  - For `name: Nova`, defaults are: `nova`, `hey nova`, `hi nova`, `ok nova`
+- **Mute phrases** (`MUTE_WORDS`): `stop listening`, `mute`, `go to sleep`
+- **Unmute phrases** (`UNMUTE_WORDS`): `start listening`, `unmute`, `wake up`
+- **Cancel phrases** (`NEVERMIND_WORDS`): `nevermind`, `never mind`
+
+To change wake words, update `name` in `soul.md`. To change mute/unmute/cancel phrases, edit the arrays in `config.py`.
 
 ### EF Prosthetic Modes
 
@@ -151,6 +163,7 @@ The tracker notifies the brain at `http://localhost:8900/event` for face arrived
 | `MERLIN_VISION_MODEL` | VLM for scene description (default `qwen3-vl:2b`) |
 | `MERLIN_AUDIO_SOURCE` | `usb` for PIXY on the same Mac |
 | `MERLIN_CAMERA_INDEX` | Video device index; start scripts usually set this from `ffmpeg -f avfoundation -list_devices` |
+| `MERLIN_NONVERBAL` | Nonverbal sound cues on/off (`1` default, set `0`/`false` to disable `open/close/thinking/ready`) |
 
 **Restart / port 8900 in use:** If a previous Merlin did not exit cleanly, the HTTP server may fail with “address already in use”. Free the port and restart (the start script stops the tracker when main exits; if something is stuck, kill tracker too):
 
@@ -297,7 +310,7 @@ Key events:
 
 This is an active build. The platform (hear, think, speak, see, track) is functional. The character and conversation design are being iterated. Future programs (morning quest, drift nudges, capture system) plug into the event bus when ready.
 
-Built by [Ezra Drake](https://x.com/Ezra_Drake) as part of the Rebel-Builder Operating System (RBOS).
+Built by [Chris Drake](https://x.com/Ezra_Drake) as part of the Rebel-Builder Operating System (RBOS).
 
 ---
 

@@ -90,7 +90,7 @@ After Merlin responds, you have ~60 seconds to keep talking without saying "Hey 
 
 ## Face & Voice Recognition
 
-Merlin recognizes Ezra, Nate, and Mel by face AND voice.
+Merlin recognizes Chris, Nate, and Mel by face AND voice.
 
 **Enroll a new face:**
 ```bash

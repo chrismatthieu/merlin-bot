@@ -5,8 +5,8 @@ The Thing: Weekly review + W11 sprint planning
 Sprint: W10, Day 7 (review tonight or tomorrow)
 
 ## What shipped today
-- Face + voice recognition live — Merlin identifies Ezra vs Nate by face AND voice
-- Vision working — saw sunglasses on Ezra's face, describes scenes from PIXY
+- Face + voice recognition live — Merlin identifies Chris vs Nate by face AND voice
+- Vision working — saw sunglasses on Chris's face, describes scenes from PIXY
 - Prompt loosened — fortune cookie to real companion. Nate talked for HOURS.
 - Identity pipeline: tracker → pi_client → brain. "Speaking: nate | Faces visible: ezra,nate"
 - Brain migrated to Nate's Mac — LaunchAgent updated, all weekend code deployed
