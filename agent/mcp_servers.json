@@ -2,17 +2,17 @@
   "servers": {
     "notes": {
       "command": "node",
-      "args": ["/Users/ezradrake/Library/Application Support/Claude/Claude Extensions/ant.dir.ant.anthropic.notes/server/index.js"],
+      "extension_id": "ant.dir.ant.anthropic.notes",
       "enabled": true
     },
     "imessages": {
       "command": "node",
-      "args": ["/Users/ezradrake/Library/Application Support/Claude/Claude Extensions/ant.dir.ant.anthropic.imessage/server/index.js"],
+      "extension_id": "ant.dir.ant.anthropic.imessage",
       "enabled": true
     },
     "mac": {
       "command": "node",
-      "args": ["/Users/ezradrake/Library/Application Support/Claude/Claude Extensions/ant.dir.gh.k6l3.osascript/server/index.js"],
+      "extension_id": "ant.dir.gh.k6l3.osascript",
       "enabled": true
     }
   }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections
+import copy
 import enum
 import json
 import logging
@@ -18,6 +19,7 @@ import requests
 
 from event_bus import EventBus
 import config
+import mcp_runtime
 
 log = logging.getLogger("merlin.brain")
 
@@ -332,6 +334,21 @@ Conversation phase: {phase}
 {scene_context}
 /no_think"""
 
+# Appended to system prompt when MCP tools are available (Notes, Messages, Mac automation).
+MCP_TOOL_GUIDANCE = """You have function-calling tools for Apple Notes, Messages (iMessage/SMS), and Mac automation (AppleScript).
+When {operator} asks to create or change a note, search Notes, send a text, or drive Mac apps (including opening or typing into Claude Desktop), call the correct tool.
+You must use a tool for any real-world action outside this chat. Do not say you saved a note or sent a message unless a tool returned success.
+After tools finish, reply in one or two short sentences for voice, under 30 words unless reporting an error.
+
+Messages / iMessage — strict rules:
+- Before send_imessage, call search_contacts using the name or email {operator} said. Use only a phone number or handle that search_contacts returns (or that {operator} clearly spoke as digits). Never invent, guess, or use placeholder numbers (e.g. 555 numbers).
+- If search_contacts finds no one, or several possible people, do not send. Ask one short clarifying question.
+- If the transcribed request looks like a name but the payload looks like a random number, treat it as unreliable — search_contacts first, never send to an unverified number."""
+
+# When MCP did not start (no Claude extension servers), stop the model from fabricating actions.
+NO_MCP_TOOLS_GUIDANCE = """Integration status: you have NO connected tools for Apple Notes, iMessage/SMS, or Mac apps in this session.
+If {operator} asks to save a note, send a text, or change anything outside this chat, say honestly that you cannot — integrations are not connected. Do not pretend the action succeeded. One short sentence."""
+
 
 # ── Context Loaders ──────────────────────────────────────────────
 
@@ -437,6 +454,7 @@ class Brain:
         bus.on("face_arrived", self._on_face_arrived)
         bus.on("face_lost", self._on_face_lost)
         bus.on("scene_update", self._on_scene_update)
+        bus.on("imessage_received", self._on_imessage_received)
 
         # Load persisted state
         self._load_persisted_state()
@@ -457,6 +475,7 @@ class Brain:
             self._bus.off("face_arrived", self._on_face_arrived)
             self._bus.off("face_lost", self._on_face_lost)
             self._bus.off("scene_update", self._on_scene_update)
+            self._bus.off("imessage_received", self._on_imessage_received)
 
     def is_alive(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
@@ -711,10 +730,99 @@ class Brain:
         """Cache latest scene description from vision module."""
         self._scene_description = description
 
+    def _on_imessage_received(self, text: str = "", sender: str = "", **kw) -> None:
+        """Announce new inbound iMessage (from imessage_watcher poll)."""
+        if self._muted:
+            log.debug("iMessage notify skipped (muted)")
+            return
+        text = (text or "").strip()
+        if len(text) < config.IMESSAGE_MIN_TEXT_LEN:
+            return
+        sender = (sender or "someone").strip()
+        line = f"New message from {sender}: {text}"
+        if len(line) > 420:
+            line = line[:417] + "…"
+        self._last_spoken = line
+        self._bus.emit("speak", text=line)
+        self._last_response_time = time.time()
+        log.info("Announced iMessage (proactive)")
+
     # ── LLM ──────────────────────────────────────────────────────
 
+    def _think_with_mcp_tools(
+        self,
+        messages: list,
+        max_tokens: int,
+        intent: Intent,
+        message: str,
+    ) -> str | None:
+        """Multi-round OpenAI-style tool calling via MCP (Notes, Messages, Mac automation)."""
+        tools = mcp_runtime.get_openai_tool_definitions()
+        if not tools:
+            return None
+        req_max = max(max_tokens, 512)
+        for round_i in range(config.BRAIN_MCP_MAX_ROUNDS):
+            try:
+                resp = requests.post(
+                    config.LLM_URL,
+                    json={
+                        "model": config.LLM_MODEL,
+                        "messages": messages,
+                        "tools": tools,
+                        "tool_choice": "auto",
+                        "stream": False,
+                        "temperature": 0.5,
+                        "max_tokens": req_max,
+                    },
+                    timeout=120,
+                )
+            except Exception:
+                log.exception("LLM error (tool round)")
+                return None
+
+            if resp.status_code != 200:
+                log.warning(
+                    "LLM tool round failed (%s): %s",
+                    resp.status_code,
+                    resp.text[:400],
+                )
+                return None
+
+            msg = resp.json().get("choices", [{}])[0].get("message", {}) or {}
+            content = (msg.get("content") or "").strip()
+            tool_calls = msg.get("tool_calls")
+
+            if tool_calls:
+                messages.append(msg)
+                for i, tc in enumerate(tool_calls):
+                    if not isinstance(tc, dict):
+                        continue
+                    fn = tc.get("function") or {}
+                    name = fn.get("name") or tc.get("name")
+                    raw_args = fn.get("arguments", "{}")
+                    if raw_args is None:
+                        raw_args = "{}"
+                    elif not isinstance(raw_args, str):
+                        raw_args = json.dumps(raw_args)
+                    tid = tc.get("id") or f"call_{round_i}_{i}"
+                    log.info("MCP tool call: %s %s", name, raw_args[:300])
+                    result = mcp_runtime.execute_tool(name, raw_args)
+                    messages.append({"role": "tool", "tool_call_id": tid, "content": result})
+                continue
+
+            text = content
+            text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+            text = re.sub(r"<\|channel>thought.*?<channel\|>", "", text, flags=re.DOTALL).strip()
+            if text:
+                self._history.append({"user": message, "assistant": text})
+                log.info(f"[{intent.name}] Response (tools): {text}")
+            return text or None
+
+        log.warning("MCP tool loop exceeded max rounds")
+        return None
+
     def _think(self, message: str, intent: Intent = Intent.GENERAL, phase: ConvoPhase = ConvoPhase.IDLE) -> str | None:
-        """Send message to Ollama with intent-specific prompting."""
+        """Send message to LLM with intent-specific prompting; use MCP tools when enabled."""
         hour = datetime.now().hour
 
         # Get intent-specific prompt
@@ -733,6 +841,10 @@ class Brain:
             rbos_context=self._rbos_context,
             scene_context=f"What you see: {self._scene_description}" if self._scene_description else "",
         )
+        if mcp_runtime.has_mcp_tools() and config.BRAIN_MCP:
+            system = system + "\n\n" + MCP_TOOL_GUIDANCE.format(operator=config.BOT_OPERATOR)
+        elif not mcp_runtime.has_mcp_tools():
+            system = system + "\n\n" + NO_MCP_TOOLS_GUIDANCE.format(operator=config.BOT_OPERATOR)
 
         messages = [{"role": "system", "content": system}]
         for ex in self._history:
@@ -749,31 +861,37 @@ class Brain:
         # Intent-specific token limit
         max_tokens = INTENT_MAX_TOKENS.get(intent, 100)
 
-        try:
-            # Vision context is included as text in the system prompt via
-            # scene_update events from vision.py. No inline image needed —
-            # vision.py pre-computes descriptions in the background.
+        if config.BRAIN_MCP and mcp_runtime.has_mcp_tools():
+            out = self._think_with_mcp_tools(
+                copy.deepcopy(messages), max_tokens, intent, message
+            )
+            if out is not None:
+                return out
+            log.warning("Brain MCP tool path failed or unsupported; falling back without tools")
 
-            resp = requests.post(config.LLM_URL, json={
-                "model": config.LLM_MODEL,
-                "messages": messages,
-                "stream": False,
-                "temperature": 0.5,
-                "max_tokens": max_tokens,
-            }, timeout=60)
+        try:
+            resp = requests.post(
+                config.LLM_URL,
+                json={
+                    "model": config.LLM_MODEL,
+                    "messages": messages,
+                    "stream": False,
+                    "temperature": 0.5,
+                    "max_tokens": max_tokens,
+                },
+                timeout=60,
+            )
 
             if resp.status_code == 200:
                 text = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-                # Strip thinking tags
-                text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
-                text = re.sub(r'<\|channel>thought.*?<channel\|>', '', text, flags=re.DOTALL).strip()
+                text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+                text = re.sub(r"<\|channel>thought.*?<channel\|>", "", text, flags=re.DOTALL).strip()
                 if text:
                     self._history.append({"user": message, "assistant": text})
                     log.info(f"[{intent.name}] Response: {text}")
                 return text or None
-            else:
-                log.error(f"LLM error: {resp.status_code} — {resp.text[:200]}")
-                return None
+            log.error(f"LLM error: {resp.status_code} — {resp.text[:200]}")
+            return None
         except Exception:
             log.exception("LLM error")
             return None

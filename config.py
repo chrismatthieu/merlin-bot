@@ -103,6 +103,29 @@ VISION_INTERVAL_ACTIVE = 3
 VISION_INTERVAL_MUTED = 30
 VISION_PROMPT = "Briefly describe what you see at this desk. One sentence."
 
+# ── Agent / MCP ──────────────────────────────────────────────────
+# When True, main.py launches Claude extension MCP servers at startup (same as agent CLI).
+AUTOSTART_MCP = os.getenv("MERLIN_AUTOSTART_MCP", "1").strip().lower() not in {"0", "false", "no", "off"}
+# When True, brain.py may call MCP tools (Notes, iMessage, Mac automation) via OpenAI-style tool messages.
+BRAIN_MCP = os.getenv("MERLIN_BRAIN_MCP", "1").strip().lower() not in {"0", "false", "no", "off"}
+try:
+    BRAIN_MCP_MAX_ROUNDS = max(1, min(20, int(os.getenv("MERLIN_BRAIN_MCP_MAX_ROUNDS", "8"))))
+except ValueError:
+    BRAIN_MCP_MAX_ROUNDS = 8
+
+# ── iMessage watcher (local chat.db poll) ─────────────────────────
+try:
+    IMESSAGE_POLL_INTERVAL = max(0, int(os.getenv("MERLIN_IMESSAGE_POLL_INTERVAL", "15")))
+except ValueError:
+    IMESSAGE_POLL_INTERVAL = 15
+IMESSAGE_CHAT_DB = Path(
+    os.getenv("MERLIN_IMESSAGE_CHAT_DB", str(Path.home() / "Library/Messages/chat.db"))
+)
+try:
+    IMESSAGE_MIN_TEXT_LEN = max(1, int(os.getenv("MERLIN_IMESSAGE_MIN_TEXT_LEN", "1")))
+except ValueError:
+    IMESSAGE_MIN_TEXT_LEN = 1
+
 # ── Conversation ─────────────────────────────────────────────────
 SOUL_PATH = Path(__file__).parent / "soul.md"
 SOUL = _load_soul(SOUL_PATH)

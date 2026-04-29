@@ -1,5 +1,6 @@
 """Merlin v2 — Orchestrator: starts modules, supervises, serves HTTP."""
 
+import atexit
 import http.server
 import json
 import logging
@@ -15,6 +16,8 @@ from voice import Voice
 from brain import Brain
 from vision import Vision
 import config
+import mcp_runtime
+from imessage_watcher import start_imessage_watcher_if_enabled
 
 # ── Logging ──────────────────────────────────────────────────────
 
@@ -28,6 +31,45 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger("merlin.main")
+
+# MCP subprocesses (Claude extension servers) — started at boot when AUTOSTART_MCP is on
+_MCP_CLIENTS: list = []
+
+
+def _stop_mcp_clients() -> None:
+    mcp_runtime.clear_mcp_tools()
+    for client in _MCP_CLIENTS:
+        try:
+            client.stop()
+        except Exception:
+            log.exception("Error stopping MCP client %s", getattr(client, "name", "?"))
+    _MCP_CLIENTS.clear()
+
+
+def _maybe_autostart_mcp() -> None:
+    """Pre-launch MCP servers so Notes / iMessage / osascript tools are warm for agent/main.py."""
+    if not config.AUTOSTART_MCP:
+        log.info("MCP autostart disabled (MERLIN_AUTOSTART_MCP)")
+        return
+    try:
+        from agent.tools.mcp_bridge import load_mcp_tools
+    except ImportError:
+        log.warning("MCP autostart skipped — could not import agent.tools.mcp_bridge")
+        return
+    try:
+        mcp_tools, clients = load_mcp_tools(verbose=False)
+        _MCP_CLIENTS.extend(clients)
+        if mcp_tools:
+            mcp_runtime.register_mcp_tools(mcp_tools)
+        if clients:
+            log.info("MCP servers started: %s", ", ".join(c.name for c in clients))
+        else:
+            log.info(
+                "MCP autostart: no servers connected "
+                "(install Claude extensions or set MERLIN_MCP_*_SCRIPT / MERLIN_MCP_EXTENSIONS_ROOT)"
+            )
+    except Exception:
+        log.exception("MCP autostart failed")
 
 # ── Module Registry ──────────────────────────────────────────────
 
@@ -260,6 +302,7 @@ class MerlinHTTPHandler(http.server.BaseHTTPRequestHandler):
 
 def main():
     orch = Orchestrator()
+    atexit.register(_stop_mcp_clients)
 
     # Register modules
     orch.register("audio_pipeline", AudioPipeline)
@@ -270,6 +313,10 @@ def main():
     # Graceful shutdown
     def shutdown(sig, frame):
         log.info("Shutting down...")
+        w = getattr(orch, "_imessage_watcher", None)
+        if w:
+            w.stop()
+        _stop_mcp_clients()
         orch.stop_all()
         sys.exit(0)
 
@@ -289,6 +336,10 @@ def main():
 
     # Start all modules
     orch.start_all()
+    watcher = start_imessage_watcher_if_enabled(orch.bus)
+    if watcher:
+        orch._imessage_watcher = watcher
+    _maybe_autostart_mcp()
     # Startup cue so boot completion is audible.
     orch.bus.emit("speak_nonverbal", sound="ready")
 
