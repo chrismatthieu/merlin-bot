@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -20,6 +21,40 @@ log = logging.getLogger("merlin.voice")
 # uvc-util pan/tilt in arcseconds; match tracker_usb / ptz_uvc (±155° pan, ±90° tilt)
 _UVC_PAN_MAX_ARC = 155 * 3600
 _UVC_TILT_MAX_ARC = 90 * 3600
+
+
+# When open/close assets are missing from sounds/, try aliases then macOS system sounds.
+_NONVERBAL_ALIASES: dict[str, tuple[str, ...]] = {
+    "open": ("wake",),
+    "close": ("goodbye",),
+}
+_MAC_NONVERBAL_FALLBACK: dict[str, Path] = {
+    "open": Path("/System/Library/Sounds/Glass.aiff"),
+    "close": Path("/System/Library/Sounds/Basso.aiff"),
+}
+
+
+def _resolve_nonverbal_path(sound: str) -> Path | None:
+    """Resolve mp3/wav in sounds/, optional aliases, then macOS built-ins."""
+    primary = [
+        config.SOUNDS_DIR / f"{sound}.mp3",
+        config.SOUNDS_DIR / f"{sound}.wav",
+    ]
+    for p in primary:
+        if p.exists():
+            return p
+    for alias in _NONVERBAL_ALIASES.get(sound, ()):
+        for ext in (".mp3", ".wav"):
+            p = config.SOUNDS_DIR / f"{alias}{ext}"
+            if p.exists():
+                log.info("Nonverbal %r → using alias asset %s", sound, p.name)
+                return p
+    if sys.platform == "darwin":
+        mac = _MAC_NONVERBAL_FALLBACK.get(sound)
+        if mac and mac.exists():
+            log.info("Nonverbal %r → system sound %s", sound, mac.name)
+            return mac
+    return None
 
 
 def _clamp_uvc_arc(pan_arc: int, tilt_arc: int) -> tuple[int, int]:
@@ -110,22 +145,29 @@ class Voice:
             target=self._speak_thread, args=(text,), daemon=True, name="speak"
         ).start()
 
-    def _on_speak_nonverbal(self, sound: str = "") -> None:
-        """Play a pre-recorded sound file."""
+    def _on_speak_nonverbal(self, sound: str = "", suppress_mic: bool = False, **kw) -> None:
+        """Play a pre-recorded sound file.
+
+        By default SFX do *not* trigger mic echo suppression so the user can still
+        be heard (e.g. unmute) while a short chime plays. TTS still uses speaking_*.
+        Set suppress_mic=True if a sound must silence VAD (rare).
+        """
         if not config.NONVERBAL_ENABLED:
             return
         if not sound:
             return
-        candidates = [
-            config.SOUNDS_DIR / f"{sound}.mp3",
-            config.SOUNDS_DIR / f"{sound}.wav",
-        ]
-        sound_path = next((p for p in candidates if p.exists()), None)
+        sound_path = _resolve_nonverbal_path(sound)
         if sound_path is None:
-            log.warning(f"Sound not found: {candidates[0]} or {candidates[1]}")
+            log.warning(
+                "Sound not found for %r (tried sounds/, aliases, macOS fallback)",
+                sound,
+            )
             return
         threading.Thread(
-            target=self._play_file, args=(sound_path,), daemon=True, name="nonverbal"
+            target=self._play_file,
+            args=(sound_path, suppress_mic),
+            daemon=True,
+            name="nonverbal",
         ).start()
 
     def _on_ptz_action(self, action: str = "") -> None:
@@ -139,6 +181,7 @@ class Voice:
     def _speak_thread(self, text: str) -> None:
         """Generate TTS and push to camera speaker. Runs in a thread."""
         with self._lock:  # only one utterance at a time
+            started = False
             try:
                 gesture = self._infer_gesture_from_text(text)
                 if gesture:
@@ -158,20 +201,24 @@ class Voice:
 
                 # Skip EQ — Mac speakers don't need camera speaker optimization
                 self._bus.emit("speaking_started")
+                started = True
                 self._push_to_speaker(audio)  # afplay blocks until done
-                self._bus.emit("speaking_finished")
                 self._bus.emit("speak_nonverbal", sound="ready")
 
             except Exception:
                 log.exception("Speak error")
                 self._bus.emit("speak_failed")
-                self._bus.emit("speaking_finished")
+            finally:
+                # Must always pair speaking_finished; otherwise audio pipeline VAD stays suppressed (inf).
+                if started:
+                    self._bus.emit("speaking_finished")
 
-    def _play_file(self, path: Path) -> None:
+    def _play_file(self, path: Path, suppress_mic: bool = False) -> None:
         """Play a pre-recorded file through the camera speaker."""
         with self._lock:
             try:
-                self._bus.emit("speaking_started")
+                if suppress_mic:
+                    self._bus.emit("speaking_started")
                 result = subprocess.run(
                     ["afplay", str(path)],
                     capture_output=True,
@@ -179,10 +226,12 @@ class Voice:
                 )
                 if result.returncode != 0:
                     log.warning(f"afplay failed for {path.name}: {result.stderr.decode()[:100]}")
-                self._bus.emit("speaking_finished")
+                if suppress_mic:
+                    self._bus.emit("speaking_finished")
             except Exception:
                 log.exception(f"Play file error: {path}")
-                self._bus.emit("speaking_finished")
+                if suppress_mic:
+                    self._bus.emit("speaking_finished")
 
     def _generate_tts(self, text: str) -> bytes | None:
         """Generate speech audio from text using Kokoro via mlx-audio."""

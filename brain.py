@@ -23,6 +23,32 @@ import mcp_runtime
 
 log = logging.getLogger("merlin.brain")
 
+# When sleeping, Whisper may return "Wake", "Wake up.", "Un-mute", etc.
+_MUTED_UNMUTE_FLEX_RE = re.compile(
+    r"\b(wake(?:[\s\-]+up)?|wakeup|unmute|unmutes|start\s+listening)\b",
+    re.I,
+)
+
+
+def _speech_unmutes_merlin(text: str) -> bool:
+    """True if this transcript should unmute: list phrases, wake name, or flexible STT variants."""
+    if any(config.heard_contains_phrase(text, w) for w in config.UNMUTE_WORDS):
+        return True
+    if any(config.heard_contains_phrase(text, w) for w in config.WAKE_WORDS):
+        return True
+    t = config.normalize_heard_text(text)
+    if not t:
+        return False
+    if _MUTED_UNMUTE_FLEX_RE.search(t):
+        return True
+    n = re.escape(config.BOT_NAME.strip().lower())
+    if re.search(rf"\b({n}|hey\s+{n}|hi\s+{n}|ok\s+{n})\b", t, re.I):
+        return True
+    # Whisper often turns "Nova" → "Novo" on USB mic.
+    if n == "nova" and re.search(r"\bnovo\b", t, re.I):
+        return True
+    return False
+
 
 # ── Intent Classification ───────────────────────────────────────
 
@@ -446,6 +472,7 @@ class Brain:
         self._last_voice_activity = 0.0
         self._thread = None
         self._last_spoken = ""  # echo detection
+        self._muted_at = 0.0  # time.time() when muted=True (for post-mute unmute guard)
         self._state_machine = ConversationStateMachine()
         self._last_intent = Intent.GENERAL
         self._fired_shift_cues = set()  # reset daily
@@ -465,6 +492,8 @@ class Brain:
         # Initial context load
         self._refresh_context()
         log.info("Brain started (intent-aware v2)")
+        # Sync mute flag with listeners (e.g. AudioPipeline STT floors) after subscriptions exist.
+        self._bus.emit("mute_toggled", muted=self._muted)
 
         # Background context refresh thread
         self._ctx_running = True
@@ -493,20 +522,40 @@ class Brain:
         text_lower = text.lower().strip()
         self._last_voice_activity = time.time()
 
-        # 0. Echo detection
-        if self._last_spoken:
+        # 0. Echo detection (not while muted — we must not drop wake / unmute attempts)
+        if not self._muted and self._last_spoken:
             similarity = SequenceMatcher(None, text_lower, self._last_spoken.lower()).ratio()
             if similarity > 0.5:
                 log.debug(f"Echo detected (similarity={similarity:.2f}), ignoring: {text[:50]}")
                 return
 
-        # 1. Check mute
+        # 1. Muted — any unmute / wake variant (lists + flexible regex + name)
         if self._muted:
-            if any(text_lower.startswith(w) for w in config.WAKE_WORDS):
+            if _speech_unmutes_merlin(text):
+                if time.time() - self._muted_at < config.MUTE_UNMUTE_GUARD_SEC:
+                    log.info(
+                        "Muted — wake phrase ignored (post-mute guard %.1fs left)",
+                        config.MUTE_UNMUTE_GUARD_SEC
+                        - (time.time() - self._muted_at),
+                    )
+                    return
                 self._set_muted(False)
-                log.info("Unmuted via wake word")
-            else:
+                reply = "I'm listening."
+                # Don't latch TTS text for echo detection — it often blocks the very next real utterance
+                # (STT picks up speaker bleed or short phrases score similar to "I'm listening.").
+                self._last_spoken = ""
+                self._last_response_time = time.time()
+                # Verbal "I'm listening." suppresses the mic for the whole say + padding — skips next command.
+                if config.VERBAL_UNMUTE_ACK:
+                    self._bus.emit("speak", text=reply)
+                elif config.NONVERBAL_ENABLED:
+                    self._bus.emit("speak_nonverbal", sound="open")
+                else:
+                    self._bus.emit("speak", text=reply)
+                log.info("Unmuted (from sleep)")
                 return
+            log.info(f"Muted — ignored (no wake match): {text[:120]!r}")
+            return
 
         # 2. Conversation controls
         if any(w in text_lower for w in config.NEVERMIND_WORDS):
@@ -515,19 +564,18 @@ class Brain:
             log.info("Conversation closed (nevermind)")
             return
 
-        if any(w in text_lower for w in config.MUTE_WORDS):
+        if config.is_mute_command(text_lower):
             self._set_muted(True)
             self._bus.emit("speak_nonverbal", sound="close")
             return
 
-        if any(w in text_lower for w in config.UNMUTE_WORDS):
-            self._set_muted(False)
-            self._bus.emit("speak_nonverbal", sound="open")
-            return
+        # UNMUTE_WORDS are handled while muted (section 1). Do not match them here:
+        # phrases like "Nova, wake up" would otherwise return before the LLM.
 
         # 3. Wake word check
-        has_wake = any(text_lower.startswith(w) for w in config.WAKE_WORDS) or \
-                   any(w in text_lower for w in config.WAKE_WORDS)
+        has_wake = any(text_lower.startswith(w) for w in config.WAKE_WORDS) or any(
+            config.heard_contains_phrase(text_lower, w) for w in config.WAKE_WORDS
+        )
         in_convo = (time.time() - self._last_response_time) < config.CONVERSATION_WINDOW
 
         if not has_wake and not in_convo:
@@ -1001,6 +1049,8 @@ class Brain:
 
     def _set_muted(self, muted: bool):
         self._muted = muted
+        if muted:
+            self._muted_at = time.time()
         self._bus.emit("mute_toggled", muted=muted)
         log.info(f"{'Muted' if muted else 'Unmuted'}")
 

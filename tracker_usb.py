@@ -19,6 +19,7 @@ import csv
 import http.server
 import json
 import os
+import queue
 import signal
 import sys
 import threading
@@ -83,6 +84,12 @@ try:
     TRACKER_CONTROL_PORT = int(os.getenv("MERLIN_TRACKER_CONTROL_PORT", "8903"))
 except ValueError:
     TRACKER_CONTROL_PORT = 8903
+
+# When brain mutes/sleeps, point the lens away (desk). When unmuted, room-scan like face-lost.
+# Default tilt is not -90°: some PIXY/UVC stacks glitch or stall at full down (black frames, dead USB),
+# which breaks wake UX. Use MERLIN_PRIVACY_TILT_DEG=-90 only if your unit handles it reliably.
+PRIVACY_PAN_DEG = float(os.getenv("MERLIN_PRIVACY_PAN_DEG", "0"))
+PRIVACY_TILT_DEG = float(os.getenv("MERLIN_PRIVACY_TILT_DEG", "-55"))
 
 
 # ── Brain Notification ────────────────────────────────────────
@@ -206,9 +213,19 @@ class GesturePause:
         ptz.set_absolute(pan, tilt)
         reset_pd()
 
+    def abandon(self) -> None:
+        """Exit gesture pause without restoring PTZ (used when muting / privacy)."""
+        with self._lock:
+            self.paused = False
 
-def _start_tracker_control_http(gesture_paused: GesturePause, ptz: PTZController, reset_pd) -> None:
-    """Serve POST /gesture/begin and /gesture/end on TRACKER_CONTROL_PORT (daemon thread)."""
+
+def _start_tracker_control_http(
+    gesture_paused: GesturePause,
+    ptz: PTZController,
+    reset_pd,
+    mute_queue: "queue.Queue[bool]",
+) -> None:
+    """Serve POST /gesture/begin, /gesture/end, /mute on TRACKER_CONTROL_PORT (daemon thread)."""
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args) -> None:
@@ -223,6 +240,12 @@ def _start_tracker_control_http(gesture_paused: GesturePause, ptz: PTZController
                 payload = {}
 
             try:
+                if self.path == "/mute":
+                    mute_queue.put(bool(payload.get("muted", False)))
+                    self.send_response(204)
+                    self.end_headers()
+                    return
+
                 if self.path == "/gesture/begin":
                     data = gesture_paused.begin(ptz)
                     body = json.dumps(data).encode()
@@ -260,7 +283,7 @@ def _start_tracker_control_http(gesture_paused: GesturePause, ptz: PTZController
     thread.start()
     print(
         f"[tracker] Control API http://{TRACKER_CONTROL_HOST}:{TRACKER_CONTROL_PORT} "
-        "(POST /gesture/begin, /gesture/end)"
+        "(POST /gesture/begin, /gesture/end, /mute)"
     )
 
 
@@ -399,7 +422,10 @@ def main():
         _last_sent_tilt = 0.0
         is_moving = False
 
-    _start_tracker_control_http(gesture_paused, ptz, reset_pd_after_gesture)
+    mute_queue: queue.Queue[bool] = queue.Queue()
+    privacy_muted = False
+
+    _start_tracker_control_http(gesture_paused, ptz, reset_pd_after_gesture, mute_queue)
 
     print(f"[tracker] YuNet + UVC PTZ tracker (USB)")
     print(f"[tracker] Deadband={DEADBAND}, fast={SPEED_FAST}, fine={SPEED_FINE}")
@@ -407,9 +433,53 @@ def main():
 
     try:
         while running:
+            # Mute/sleep (from main.py) — privacy pose or resume room scan
+            while True:
+                try:
+                    m = mute_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if m:
+                    privacy_muted = True
+                    gesture_paused.abandon()
+                    reset_pd_after_gesture()
+                    ptz.set_absolute(PRIVACY_PAN_DEG, PRIVACY_TILT_DEG)
+                    is_tracking = False
+                    is_moving = False
+                    scan_active = False
+                    face_hit_frames = 0
+                    face_miss_frames = 0
+                    face_lost_since = None
+                    smooth_x = 0.5
+                    smooth_y = 0.5
+                    prev_err_x = 0.0
+                    prev_err_y = 0.0
+                    print(
+                        f"[tracker] Privacy/mute — PTZ parked "
+                        f"(pan={PRIVACY_PAN_DEG:.0f}°, tilt={PRIVACY_TILT_DEG:.0f}°); "
+                        f"face detection off until wake"
+                    )
+                else:
+                    privacy_muted = False
+                    gesture_paused.abandon()
+                    reset_pd_after_gesture()
+                    is_tracking = False
+                    face_hit_frames = 0
+                    face_miss_frames = 0
+                    face_lost_since = None
+                    scan_active = SCAN_ENABLED
+                    scan_idx = 0
+                    last_scan_move = 0.0
+                    print("[tracker] Unmuted — face detection on, seeking face (room scan)")
+
             # USB capture is synchronous — always returns latest frame
             ret, frame = cap.read()
             if not ret:
+                time.sleep(0.01)
+                continue
+
+            # Sleep/mute: keep grabbing frames for USB stability but do not run YuNet or tracking.
+            if privacy_muted:
                 time.sleep(0.01)
                 continue
 
@@ -553,7 +623,12 @@ def main():
                         scan_idx = 0
                         last_scan_move = 0.0
                         notify_brain("face_lost")
-                elif SCAN_ENABLED and scan_active and not gesture_paused.paused:
+                elif (
+                    SCAN_ENABLED
+                    and scan_active
+                    and not gesture_paused.paused
+                    and not privacy_muted
+                ):
                     now = time.monotonic()
                     if now - last_scan_move >= SCAN_HOLD_SEC:
                         pass_len = len(SCAN_HORIZONTAL_PASS)

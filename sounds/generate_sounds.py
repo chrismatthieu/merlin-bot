@@ -116,4 +116,8 @@ combined[:len(startup)] += startup
 combined[:len(echo)] += echo
 save_wav("startup.wav", combined)
 
+# 14. OPEN / CLOSE — mute / unmute (match voice.py names; also alias to wake/goodbye in code)
+save_wav("open.wav", np.concatenate([tone(800, 0.08), silence(0.03), tone(1200, 0.1)]))
+save_wav("close.wav", np.concatenate([tone(900, 0.12), silence(0.04), tone(600, 0.15)]))
+
 print(f"\nDone. {len(list(OUT_DIR.glob('*.wav')))} sounds generated in {OUT_DIR}")

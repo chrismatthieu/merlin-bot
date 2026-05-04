@@ -84,10 +84,24 @@ MIC_SAMPLE_RATE = 16000
 VAD_THRESHOLD = 0.5
 UTTERANCE_SILENCE_TIMEOUT = 1.5
 ECHO_SUPPRESSION_PADDING = 0.5   # USB path is much shorter than RTSP (was 1.5s)
+try:
+    MIN_UTTERANCE_SEC = float(os.getenv("MERLIN_MIN_UTTERANCE_SEC", "0.28"))
+except ValueError:
+    MIN_UTTERANCE_SEC = 0.28
+# PCM length required before Whisper runs (was 1.0s hard-coded — blocked short "wake up" / "Nova").
+MIN_UTTERANCE_BYTES = max(int(MIC_SAMPLE_RATE * 2 * MIN_UTTERANCE_SEC), 4000)
+try:
+    MIN_UTTERANCE_SEC_MUTED = float(os.getenv("MERLIN_MIN_UTTERANCE_SEC_MUTED", "0.12"))
+except ValueError:
+    MIN_UTTERANCE_SEC_MUTED = 0.12
+# While muted, accept shorter clips so "wake up" / name reach Whisper (still has a small floor).
+MIN_UTTERANCE_BYTES_MUTED = max(int(MIC_SAMPLE_RATE * 2 * MIN_UTTERANCE_SEC_MUTED), 1600)
 
 # ── TTS ──────────────────────────────────────────────────────────
 KOKORO_VOICE = os.getenv("MERLIN_VOICE", "am_fenrir")  # nerdy sage in a security camera body
 NONVERBAL_ENABLED = os.getenv("MERLIN_NONVERBAL", "1").strip().lower() not in {"0", "false", "no", "off"}
+# Default off: macOS say / Kokoro runs seconds of echo suppression on the USB mic and eats the next phrase.
+VERBAL_UNMUTE_ACK = os.getenv("MERLIN_VERBAL_UNMUTE_ACK", "0").strip().lower() not in {"0", "false", "no", "off"}
 
 # ── USB Camera (EMEET PIXY) ─────────────────────────────────────
 USB_CAMERA_INDEX = int(os.getenv("MERLIN_CAMERA_INDEX", "0"))
@@ -148,8 +162,57 @@ WAKE_WORDS = _build_wake_words(BOT_NAME)
 CONVERSATION_WINDOW = 60  # seconds after Merlin speaks before requiring wake word again
 CONVERSATION_HISTORY_SIZE = 10
 MUTE_WORDS = ["stop listening", "mute", "go to sleep"]
-UNMUTE_WORDS = ["start listening", "unmute", "wake up"]
+UNMUTE_WORDS = ["start listening", "unmute", "wake up", "wakeup"]
 NEVERMIND_WORDS = ["nevermind", "never mind"]
+# Ignore wake/unmute phrase matches for this long after entering sleep. Otherwise a
+# second STT segment, motor noise, or Whisper bias from SLEEP_WAKE_WHISPER_PROMPT
+# can fire a false "Hey Nova" / "wake up" within ~1s and undo mute immediately.
+try:
+    MUTE_UNMUTE_GUARD_SEC = float(os.getenv("MERLIN_MUTE_UNMUTE_GUARD_SEC", "3"))
+except ValueError:
+    MUTE_UNMUTE_GUARD_SEC = 3.0
+
+# Whisper while "sleeping": room tone + short clips often get classified as no-speech (default 0.6).
+try:
+    WHISPER_NO_SPEECH_THRESHOLD_SLEEP = float(
+        os.getenv("MERLIN_WHISPER_NO_SPEECH_SLEEP", "0.22")
+    )
+except ValueError:
+    WHISPER_NO_SPEECH_THRESHOLD_SLEEP = 0.22
+_n = BOT_NAME.strip()
+_novo = " Novo. Hey Novo." if _n.lower() == "nova" else ""
+SLEEP_WAKE_WHISPER_PROMPT = os.getenv(
+    "MERLIN_WHISPER_SLEEP_WAKE_PROMPT",
+    f"Wake up. Unmute. Start listening. {_n}. Hey {_n}. Hi {_n}. {_n}, wake up.{_novo}",
+)
+
+
+def normalize_heard_text(s: str) -> str:
+    """Normalize STT text so phrase checks survive punctuation and hyphenation (wake-up → wake up)."""
+    if not s:
+        return ""
+    t = s.lower().strip()
+    t = re.sub(r"[\s\-_,;:!?.]+", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def heard_contains_phrase(text: str, phrase: str) -> bool:
+    """True if normalized *text* contains normalized *phrase*."""
+    t = normalize_heard_text(text)
+    p = normalize_heard_text(phrase)
+    return bool(p) and p in t
+
+
+def is_mute_command(text: str) -> bool:
+    """True for sleep/mute intents; avoids matching *mute* inside *unmute*."""
+    t = normalize_heard_text(text)
+    if heard_contains_phrase(t, "stop listening"):
+        return True
+    if heard_contains_phrase(t, "go to sleep") or heard_contains_phrase(t, "goto sleep"):
+        return True
+    # Standalone word "mute" — \bmute\b matches "mute" but not "unmute"
+    return bool(re.search(r"\bmute\b", t))
+
 
 # ── RBOS ─────────────────────────────────────────────────────────
 RBOS_ROOT = Path("/Users/ezradrake/Documents/RBOS")

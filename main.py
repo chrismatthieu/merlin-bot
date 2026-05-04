@@ -8,6 +8,8 @@ import signal
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime
 
 from event_bus import EventBus
@@ -95,6 +97,21 @@ class Orchestrator:
 
     def _on_mute(self, muted=False, **kw):
         self._muted = muted
+        # USB tracker: POST must not block the event bus (speech/audio often emit from audio thread).
+        def _post_tracker() -> None:
+            try:
+                body = json.dumps({"muted": bool(muted)}).encode()
+                req = urllib.request.Request(
+                    f"{config.TRACKER_CONTROL_URL.rstrip('/')}/mute",
+                    data=body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                urllib.request.urlopen(req, timeout=1.5)
+            except (urllib.error.URLError, OSError, TimeoutError):
+                log.debug("Tracker /mute not applied (no USB tracker?)", exc_info=False)
+
+        threading.Thread(target=_post_tracker, daemon=True, name="tracker-mute").start()
 
     def register(self, name: str, module_class):
         info = ModuleInfo(name, module_class())
