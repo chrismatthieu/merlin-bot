@@ -349,6 +349,9 @@ Messages / iMessage — strict rules:
 NO_MCP_TOOLS_GUIDANCE = """Integration status: you have NO connected tools for Apple Notes, iMessage/SMS, or Mac apps in this session.
 If {operator} asks to save a note, send a text, or change anything outside this chat, say honestly that you cannot — integrations are not connected. Do not pretend the action succeeded. One short sentence."""
 
+# When brain MCP is disabled in config — do not steer the model toward Notes/Messages/Contacts at all.
+BRAIN_APPLE_INTEGRATIONS_OFF_GUIDANCE = """Apple Notes, Contacts, and Messages integrations are off for this session. Do not call tools for them, do not tell {operator} you saved notes, sent messages, or looked up contacts, and do not imply those actions happened."""
+
 
 # ── Context Loaders ──────────────────────────────────────────────
 
@@ -841,10 +844,12 @@ class Brain:
             rbos_context=self._rbos_context,
             scene_context=f"What you see: {self._scene_description}" if self._scene_description else "",
         )
-        if mcp_runtime.has_mcp_tools() and config.BRAIN_MCP:
+        if config.BRAIN_MCP and mcp_runtime.has_mcp_tools():
             system = system + "\n\n" + MCP_TOOL_GUIDANCE.format(operator=config.BOT_OPERATOR)
-        elif not mcp_runtime.has_mcp_tools():
+        elif config.BRAIN_MCP and not mcp_runtime.has_mcp_tools():
             system = system + "\n\n" + NO_MCP_TOOLS_GUIDANCE.format(operator=config.BOT_OPERATOR)
+        else:
+            system = system + "\n\n" + BRAIN_APPLE_INTEGRATIONS_OFF_GUIDANCE.format(operator=config.BOT_OPERATOR)
 
         messages = [{"role": "system", "content": system}]
         for ex in self._history:

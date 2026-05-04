@@ -3,17 +3,17 @@
     "notes": {
       "command": "node",
       "extension_id": "ant.dir.ant.anthropic.notes",
-      "enabled": true
+      "enabled": false
     },
     "imessages": {
       "command": "node",
       "extension_id": "ant.dir.ant.anthropic.imessage",
-      "enabled": true
+      "enabled": false
     },
     "mac": {
       "command": "node",
       "extension_id": "ant.dir.gh.k6l3.osascript",
-      "enabled": true
+      "enabled": false
     }
   }
 }

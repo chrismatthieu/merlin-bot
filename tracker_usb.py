@@ -15,14 +15,18 @@ Run:  python3 merlin/tracker_usb.py
 Stop: Ctrl+C (returns camera to home)
 """
 
-import cv2
 import csv
+import http.server
+import json
 import os
 import signal
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
+
+import cv2
 
 # ── Config ──────────────────────────────────────────────────────
 
@@ -72,6 +76,13 @@ PTZ_SCALE_TILT = 1.5  # degrees per unit of PD output
 
 # Brain notification
 BRAIN_URL = os.getenv("MERLIN_BRAIN_URL", "http://localhost:8900/event")
+
+# Local HTTP: voice.py pauses face tracking during nod/shake/look PTZ scripts
+TRACKER_CONTROL_HOST = os.getenv("MERLIN_TRACKER_CONTROL_HOST", "127.0.0.1")
+try:
+    TRACKER_CONTROL_PORT = int(os.getenv("MERLIN_TRACKER_CONTROL_PORT", "8903"))
+except ValueError:
+    TRACKER_CONTROL_PORT = 8903
 
 
 # ── Brain Notification ────────────────────────────────────────
@@ -159,6 +170,98 @@ class PTZController:
                 self._ptz.set_pantilt(self._pan, self._tilt)
             except Exception as e:
                 print(f"[tracker] PTZ error: {e}")
+
+
+class GesturePause:
+    """While True, the main loop does not apply face-driven or scan PTZ (voice runs uvc-util)."""
+
+    __slots__ = ("_lock", "paused", "saved_pan", "saved_tilt")
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.paused = False
+        self.saved_pan = 0.0
+        self.saved_tilt = 0.0
+
+    def begin(self, ptz: PTZController) -> dict:
+        with self._lock:
+            self.saved_pan = ptz._pan
+            self.saved_tilt = ptz._tilt
+            self.paused = True
+            sp, st = self.saved_pan, self.saved_tilt
+        return {
+            "pan_deg": sp,
+            "tilt_deg": st,
+            "pan_arcsec": int(round(sp * 3600)),
+            "tilt_arcsec": int(round(st * 3600)),
+        }
+
+    def end(self, ptz: PTZController, reset_pd, finalize_deg: tuple[float, float] | None) -> None:
+        with self._lock:
+            self.paused = False
+            if finalize_deg is not None:
+                pan, tilt = finalize_deg
+            else:
+                pan, tilt = self.saved_pan, self.saved_tilt
+        ptz.set_absolute(pan, tilt)
+        reset_pd()
+
+
+def _start_tracker_control_http(gesture_paused: GesturePause, ptz: PTZController, reset_pd) -> None:
+    """Serve POST /gesture/begin and /gesture/end on TRACKER_CONTROL_PORT (daemon thread)."""
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args) -> None:
+            pass
+
+        def do_POST(self) -> None:
+            content_length = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(content_length) if content_length else b"{}"
+            try:
+                payload = json.loads(raw.decode() or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+
+            try:
+                if self.path == "/gesture/begin":
+                    data = gesture_paused.begin(ptz)
+                    body = json.dumps(data).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+
+                if self.path == "/gesture/end":
+                    fin = payload.get("finalize_deg")
+                    finalize: tuple[float, float] | None = None
+                    if isinstance(fin, dict):
+                        finalize = (float(fin.get("pan", 0)), float(fin.get("tilt", 0)))
+                    gesture_paused.end(ptz, reset_pd, finalize)
+                    self.send_response(204)
+                    self.end_headers()
+                    return
+
+                self.send_response(404)
+                self.end_headers()
+            except Exception as e:
+                print(f"[tracker] control HTTP error: {e}")
+                self.send_response(500)
+                self.end_headers()
+
+    try:
+        srv = http.server.ThreadingHTTPServer((TRACKER_CONTROL_HOST, TRACKER_CONTROL_PORT), Handler)
+    except OSError as e:
+        print(f"[tracker] Control API not started ({e}) — voice gestures fall back without pause")
+        return
+
+    thread = threading.Thread(target=srv.serve_forever, daemon=True, name="tracker-ctl")
+    thread.start()
+    print(
+        f"[tracker] Control API http://{TRACKER_CONTROL_HOST}:{TRACKER_CONTROL_PORT} "
+        "(POST /gesture/begin, /gesture/end)"
+    )
 
 
 # ── Face Detection (YuNet) ────────────────────────────────────
@@ -264,12 +367,9 @@ def main():
     actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(f"[tracker] USB camera opened: {actual_w}x{actual_h} at index {CAMERA_INDEX}")
 
-    # Initialize PTZ
+    # Initialize PTZ + loop state (velocities referenced by gesture resume callback)
     ptz = PTZController()
-
-    print(f"[tracker] YuNet + UVC PTZ tracker (USB)")
-    print(f"[tracker] Deadband={DEADBAND}, fast={SPEED_FAST}, fine={SPEED_FINE}")
-    print("[tracker] Running.")
+    gesture_paused = GesturePause()
 
     logger = TrackingLogger()
     face_lost_since = None
@@ -278,12 +378,10 @@ def main():
     is_tracking = False
     is_moving = False
     last_log = 0
-    # Scan by default until a face is found.
     scan_active = SCAN_ENABLED
     scan_idx = 0
     last_scan_move = 0.0
 
-    # Smoothing state
     smooth_x = 0.5
     smooth_y = 0.5
     prev_err_x = 0.0
@@ -292,6 +390,20 @@ def main():
     current_tilt_vel = 0.0
     _last_sent_pan = 0.0
     _last_sent_tilt = 0.0
+
+    def reset_pd_after_gesture() -> None:
+        nonlocal current_pan_vel, current_tilt_vel, _last_sent_pan, _last_sent_tilt, is_moving
+        current_pan_vel = 0.0
+        current_tilt_vel = 0.0
+        _last_sent_pan = 0.0
+        _last_sent_tilt = 0.0
+        is_moving = False
+
+    _start_tracker_control_http(gesture_paused, ptz, reset_pd_after_gesture)
+
+    print(f"[tracker] YuNet + UVC PTZ tracker (USB)")
+    print(f"[tracker] Deadband={DEADBAND}, fast={SPEED_FAST}, fine={SPEED_FINE}")
+    print("[tracker] Running.")
 
     try:
         while running:
@@ -344,14 +456,14 @@ def main():
 
                 # 3. Dead zone
                 if abs(err_x) < DEADBAND and abs(err_y) < DEADBAND:
-                    if is_moving:
+                    if is_moving and not gesture_paused.paused:
                         ptz.stop()
                         is_moving = False
                         current_pan_vel = 0.0
                         current_tilt_vel = 0.0
                     prev_err_x = err_x
                     prev_err_y = err_y
-                else:
+                elif not gesture_paused.paused:
                     # 4. PD controller
                     d_err_x = err_x - prev_err_x
                     d_err_y = err_y - prev_err_y
@@ -403,6 +515,10 @@ def main():
 
                     prev_err_x = err_x
                     prev_err_y = err_y
+                else:
+                    # Gesture script owns PTZ — keep errors warm for smooth handoff
+                    prev_err_x = err_x
+                    prev_err_y = err_y
 
                 now = time.monotonic()
                 if now - last_log > 2.0:
@@ -437,7 +553,7 @@ def main():
                         scan_idx = 0
                         last_scan_move = 0.0
                         notify_brain("face_lost")
-                elif SCAN_ENABLED and scan_active:
+                elif SCAN_ENABLED and scan_active and not gesture_paused.paused:
                     now = time.monotonic()
                     if now - last_scan_move >= SCAN_HOLD_SEC:
                         pass_len = len(SCAN_HORIZONTAL_PASS)

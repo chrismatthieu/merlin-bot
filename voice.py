@@ -17,6 +17,17 @@ import config
 
 log = logging.getLogger("merlin.voice")
 
+# uvc-util pan/tilt in arcseconds; match tracker_usb / ptz_uvc (±155° pan, ±90° tilt)
+_UVC_PAN_MAX_ARC = 155 * 3600
+_UVC_TILT_MAX_ARC = 90 * 3600
+
+
+def _clamp_uvc_arc(pan_arc: int, tilt_arc: int) -> tuple[int, int]:
+    return (
+        max(-_UVC_PAN_MAX_ARC, min(_UVC_PAN_MAX_ARC, pan_arc)),
+        max(-_UVC_TILT_MAX_ARC, min(_UVC_TILT_MAX_ARC, tilt_arc)),
+    )
+
 
 def apply_speaker_eq(audio_bytes: bytes) -> bytes:
     """Apply EQ optimized for the Amcrest camera's tiny speaker."""
@@ -248,6 +259,55 @@ class Voice:
             self._bus.emit("speaking_finished")
             return False
 
+    def _find_uvc_util(self) -> str | None:
+        uvc_paths = [
+            str(Path.home() / ".local" / "bin" / "uvc-util"),
+            "/usr/local/bin/uvc-util",
+            "/opt/homebrew/bin/uvc-util",
+            "uvc-util",
+        ]
+        for p in uvc_paths:
+            try:
+                r = subprocess.run([p, "--version"], capture_output=True, timeout=2)
+                if r.returncode == 0:
+                    return p
+            except Exception:
+                continue
+        return None
+
+    def _tracker_gesture_begin(self) -> tuple[int, int] | None:
+        """Ask tracker to pause face PTZ; returns (pan_arcsec, tilt_arcsec) or None."""
+        try:
+            base = config.TRACKER_CONTROL_URL.rstrip("/")
+            r = requests.post(f"{base}/gesture/begin", timeout=1.0)
+            if r.status_code != 200:
+                return None
+            d = r.json()
+            return int(d.get("pan_arcsec", 0)), int(d.get("tilt_arcsec", 0))
+        except Exception:
+            return None
+
+    def _tracker_gesture_end(
+        self, began: bool, finalize_deg: tuple[float, float] | None = None
+    ) -> None:
+        if not began:
+            return
+        try:
+            base = config.TRACKER_CONTROL_URL.rstrip("/")
+            payload = {}
+            if finalize_deg is not None:
+                payload["finalize_deg"] = {
+                    "pan": finalize_deg[0],
+                    "tilt": finalize_deg[1],
+                }
+            requests.post(
+                f"{base}/gesture/end",
+                json=payload,
+                timeout=3.0,
+            )
+        except Exception:
+            pass
+
     def _infer_gesture_from_text(self, text: str) -> str | None:
         """Return 'yes' or 'no' gesture for short binary answers."""
         normalized = " ".join(text.strip().lower().split())
@@ -275,113 +335,107 @@ class Voice:
         return None
 
     def _run_ptz_gesture(self, gesture: str) -> None:
-        """Best-effort PTZ gesture using uvc-util CLI."""
-        uvc_paths = [
-            str(Path.home() / ".local" / "bin" / "uvc-util"),
-            "/usr/local/bin/uvc-util",
-            "/opt/homebrew/bin/uvc-util",
-            "uvc-util",
-        ]
-        uvc_bin = None
-        for p in uvc_paths:
-            try:
-                r = subprocess.run([p, "--version"], capture_output=True, timeout=2)
-                if r.returncode == 0:
-                    uvc_bin = p
-                    break
-            except Exception:
-                continue
-
+        """Best-effort PTZ gesture using uvc-util CLI; offsets from current aim when tracker cooperates."""
+        uvc_bin = self._find_uvc_util()
         if not uvc_bin:
             return
 
-        # AVFoundation camera index follows startup scripts where PIXY is auto-detected.
         cam_idx = str(config.USB_CAMERA_INDEX)
-        log.info(f"PTZ gesture: {gesture} (camera index {cam_idx})")
-        if gesture == "yes":
-            # Nod: center -> slight down -> slight up -> center
-            sequence = [
-                "{pan=0,tilt=0}",
-                "{pan=0,tilt=-43200}",
-                "{pan=0,tilt=43200}",
-                "{pan=0,tilt=0}",
-            ]
-        else:
-            # Shake: center -> left -> right -> center
-            sequence = [
-                "{pan=0,tilt=0}",
-                "{pan=-54000,tilt=0}",
-                "{pan=54000,tilt=0}",
-                "{pan=-36000,tilt=0}",
-                "{pan=36000,tilt=0}",
-                "{pan=0,tilt=0}",
-            ]
+        pose = self._tracker_gesture_begin()
+        tracking_pause = pose is not None
+        bp, bt = pose if pose is not None else (0, 0)
 
-        for value in sequence:
-            try:
-                subprocess.run(
-                    [uvc_bin, "-I", cam_idx, "-s", f"pan-tilt-abs={value}"],
-                    capture_output=True,
-                    timeout=3,
-                    check=False,
-                )
-                time.sleep(0.28)
-            except Exception:
-                return
+        try:
+            if gesture == "yes":
+                steps = [
+                    (bp, bt),
+                    (bp, bt - 43200),
+                    (bp, bt + 43200),
+                    (bp, bt),
+                ]
+            else:
+                steps = [
+                    (bp, bt),
+                    (bp - 54000, bt),
+                    (bp + 54000, bt),
+                    (bp - 36000, bt),
+                    (bp + 36000, bt),
+                    (bp, bt),
+                ]
+            log.info(
+                f"PTZ gesture: {gesture} (camera {cam_idx}, base_arc=({bp},{bt}), pause={tracking_pause})"
+            )
+            for pan_a, tilt_a in steps:
+                pan_a, tilt_a = _clamp_uvc_arc(pan_a, tilt_a)
+                spec = f"{{pan={pan_a},tilt={tilt_a}}}"
+                try:
+                    subprocess.run(
+                        [uvc_bin, "-I", cam_idx, "-s", f"pan-tilt-abs={spec}"],
+                        capture_output=True,
+                        timeout=3,
+                        check=False,
+                    )
+                    time.sleep(0.28)
+                except Exception:
+                    return
+        finally:
+            self._tracker_gesture_end(tracking_pause)
 
     def _run_ptz_action(self, action: str) -> None:
-        """Execute larger directional PTZ moves like look left/right/around."""
-        uvc_paths = [
-            str(Path.home() / ".local" / "bin" / "uvc-util"),
-            "/usr/local/bin/uvc-util",
-            "/opt/homebrew/bin/uvc-util",
-            "uvc-util",
-        ]
-        uvc_bin = None
-        for p in uvc_paths:
-            try:
-                r = subprocess.run([p, "--version"], capture_output=True, timeout=2)
-                if r.returncode == 0:
-                    uvc_bin = p
-                    break
-            except Exception:
-                continue
+        """Execute larger directional PTZ moves; restore prior aim unless look_center."""
+        uvc_bin = self._find_uvc_util()
         if not uvc_bin:
             return
 
-        cam_idx = str(config.USB_CAMERA_INDEX)
         if action == "look_left":
-            sequence = ["{pan=-72000,tilt=0}", "{pan=0,tilt=0}"]
+            build = lambda bp, bt: [(bp, bt), (bp - 72000, bt), (bp, bt)]
         elif action == "look_right":
-            sequence = ["{pan=72000,tilt=0}", "{pan=0,tilt=0}"]
+            build = lambda bp, bt: [(bp, bt), (bp + 72000, bt), (bp, bt)]
         elif action == "look_up":
-            sequence = ["{pan=0,tilt=54000}", "{pan=0,tilt=0}"]
+            build = lambda bp, bt: [(bp, bt), (bp, bt + 54000), (bp, bt)]
         elif action == "look_down":
-            sequence = ["{pan=0,tilt=-54000}", "{pan=0,tilt=0}"]
+            build = lambda bp, bt: [(bp, bt), (bp, bt - 54000), (bp, bt)]
         elif action == "look_center":
-            sequence = ["{pan=0,tilt=0}"]
+            build = lambda bp, bt: [(bp, bt), (0, 0)]
         elif action == "look_around":
-            sequence = [
-                "{pan=0,tilt=0}",
-                "{pan=-72000,tilt=0}",
-                "{pan=72000,tilt=0}",
-                "{pan=0,tilt=0}",
+            build = lambda bp, bt: [
+                (bp, bt),
+                (bp - 72000, bt),
+                (bp + 72000, bt),
+                (bp, bt),
             ]
         else:
             return
 
-        log.info(f"PTZ action: {action} (camera index {cam_idx})")
-        for value in sequence:
-            try:
-                subprocess.run(
-                    [uvc_bin, "-I", cam_idx, "-s", f"pan-tilt-abs={value}"],
-                    capture_output=True,
-                    timeout=4,
-                    check=False,
-                )
-                time.sleep(0.5)
-            except Exception:
-                return
+        cam_idx = str(config.USB_CAMERA_INDEX)
+        pose = self._tracker_gesture_begin()
+        tracking_pause = pose is not None
+        bp, bt = pose if pose is not None else (0, 0)
+        steps = build(bp, bt)
+
+        try:
+            log.info(
+                f"PTZ action: {action} (camera {cam_idx}, base_arc=({bp},{bt}), pause={tracking_pause})"
+            )
+            delay = 0.5
+            for pan_a, tilt_a in steps:
+                pan_a, tilt_a = _clamp_uvc_arc(pan_a, tilt_a)
+                spec = f"{{pan={pan_a},tilt={tilt_a}}}"
+                try:
+                    subprocess.run(
+                        [uvc_bin, "-I", cam_idx, "-s", f"pan-tilt-abs={spec}"],
+                        capture_output=True,
+                        timeout=4,
+                        check=False,
+                    )
+                    time.sleep(delay)
+                except Exception:
+                    break
+        finally:
+            if action == "look_center":
+                self._tracker_gesture_end(tracking_pause, finalize_deg=(0.0, 0.0))
+            else:
+                self._tracker_gesture_end(tracking_pause)
 
     def _push_to_speaker(self, audio_bytes: bytes) -> None:
         """Play audio on Nate's Mac speakers via afplay.

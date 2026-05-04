@@ -95,6 +95,16 @@ USB_CAMERA_WIDTH = 1920
 USB_CAMERA_HEIGHT = 1080
 USB_CAMERA_FPS = 30
 
+# USB tracker control API (tracker_usb.py): pause face PTZ during scripted gestures
+try:
+    TRACKER_CONTROL_PORT = int(os.getenv("MERLIN_TRACKER_CONTROL_PORT", "8903"))
+except ValueError:
+    TRACKER_CONTROL_PORT = 8903
+TRACKER_CONTROL_URL = os.getenv(
+    "MERLIN_TRACKER_CONTROL_URL",
+    f"http://127.0.0.1:{TRACKER_CONTROL_PORT}",
+)
+
 # ── Vision ───────────────────────────────────────────────────────
 VISION_MODEL = os.getenv("MERLIN_VISION_MODEL", "mlx-community/nanoLLaVA-1.5-4bit")
 VISION_INTERVAL_DEFAULT = 5
@@ -105,9 +115,9 @@ VISION_PROMPT = "Briefly describe what you see at this desk. One sentence."
 
 # ── Agent / MCP ──────────────────────────────────────────────────
 # When True, main.py launches Claude extension MCP servers at startup (same as agent CLI).
-AUTOSTART_MCP = os.getenv("MERLIN_AUTOSTART_MCP", "1").strip().lower() not in {"0", "false", "no", "off"}
+AUTOSTART_MCP = os.getenv("MERLIN_AUTOSTART_MCP", "0").strip().lower() not in {"0", "false", "no", "off"}
 # When True, brain.py may call MCP tools (Notes, iMessage, Mac automation) via OpenAI-style tool messages.
-BRAIN_MCP = os.getenv("MERLIN_BRAIN_MCP", "1").strip().lower() not in {"0", "false", "no", "off"}
+BRAIN_MCP = os.getenv("MERLIN_BRAIN_MCP", "0").strip().lower() not in {"0", "false", "no", "off"}
 try:
     BRAIN_MCP_MAX_ROUNDS = max(1, min(20, int(os.getenv("MERLIN_BRAIN_MCP_MAX_ROUNDS", "8"))))
 except ValueError:
@@ -115,9 +125,9 @@ except ValueError:
 
 # ── iMessage watcher (local chat.db poll) ─────────────────────────
 try:
-    IMESSAGE_POLL_INTERVAL = max(0, int(os.getenv("MERLIN_IMESSAGE_POLL_INTERVAL", "15")))
+    IMESSAGE_POLL_INTERVAL = max(0, int(os.getenv("MERLIN_IMESSAGE_POLL_INTERVAL", "0")))
 except ValueError:
-    IMESSAGE_POLL_INTERVAL = 15
+    IMESSAGE_POLL_INTERVAL = 0
 IMESSAGE_CHAT_DB = Path(
     os.getenv("MERLIN_IMESSAGE_CHAT_DB", str(Path.home() / "Library/Messages/chat.db"))
 )

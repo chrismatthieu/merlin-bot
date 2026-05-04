@@ -57,13 +57,13 @@ The `agent/` directory contains a separate ReAct agent that gives Merlin's local
 
 You can still set explicit `args` with `~` / env vars; those are tried before `extension_id` search.
 
-When you run **`main.py`** (including `./start-merlin-ollama.sh`), Merlin **pre-starts** the same MCP extension servers configured in `agent/mcp_servers.json`, attached to the orchestrator process (same as `load_mcp_tools()` in the agent CLI). Voice **`brain.py`** does not call these tools yet; the ReAct agent remains `python agent/main.py`. If you run the agent CLI **while** the full app is up, you may get a **second** set of MCP Node processes—set `MERLIN_AUTOSTART_MCP=0` on the app if you prefer MCP only from the CLI.
+When you run **`main.py`** (including `./start-merlin-ollama.sh`), Merlin can **pre-start** the same MCP extension servers as `agent/mcp_servers.json` (**off by default** via `MERLIN_AUTOSTART_MCP`). Set **`MERLIN_AUTOSTART_MCP=1`**, set **`"enabled": true`** on the servers you want, and install the matching Claude extensions (or `MERLIN_MCP_*_SCRIPT` paths). Voice **`brain.py`** uses those tools only when **`MERLIN_BRAIN_MCP=1`**. The ReAct CLI is still `python agent/main.py` (use `--no-mcp` to skip servers there). If both app and agent start MCP, you may get duplicate Node processes.
 
-With **`MERLIN_BRAIN_MCP=1`** (default), voice/chat **`brain.py`** uses the same tool definitions: Apple Notes, iMessage/SMS, and **Mac automation** (AppleScript). *Claude Desktop* has no public local API; Merlin can only drive it through those automation tools (e.g. activate the app, type or paste text) when the MCP `mac` / osascript server exposes them. Your chat LLM must support **OpenAI-compatible** `tools` / `tool_calls` (e.g. recent Ollama or LM Studio); otherwise the brain falls back to text-only replies.
+With **`MERLIN_BRAIN_MCP=1`**, voice/chat **`brain.py`** can call the same tool definitions (Apple Notes, iMessage/SMS, Mac automation) if MCP servers are running and your LLM supports **OpenAI-compatible** `tools` / `tool_calls` (e.g. recent Ollama or LM Studio); otherwise the brain replies without tools.
 
-If **no MCP servers** start (see log: `MCP autostart: no servers connected`), the brain is instructed **not** to pretend Notes/Messages actions succeeded — you must install the Claude **Notes** / **iMessage** extensions (or set `MERLIN_MCP_*_SCRIPT` paths) so tools actually register.
+With integrations off (defaults), the brain is told **not** to pretend Notes/Messages/Contacts actions succeeded.
 
-**Sending iMessage:** The model is instructed to call **`search_contacts`** before **`send_imessage`** and not to guess numbers. Wrong recipients often come from **STT** mangling a name into digits or from an ambiguous contact — say the contact name clearly, or use “text **+1…**” with explicit digits if you need a number not in Contacts.
+**If you turn iMessage tools on:** the model is instructed to call **`search_contacts`** before **`send_imessage`** and not to guess numbers. Wrong recipients often come from **STT** mangling a name into digits — say the contact name clearly, or use explicit digits for numbers not in Contacts.
 
 ---
 
@@ -178,15 +178,16 @@ The tracker notifies the brain at `http://localhost:8900/event` for face arrived
 | `MERLIN_VISION_MODEL` | VLM for scene description (default `qwen3-vl:2b`) |
 | `MERLIN_AUDIO_SOURCE` | `usb` for PIXY on the same Mac |
 | `MERLIN_CAMERA_INDEX` | Video device index; start scripts usually set this from `ffmpeg -f avfoundation -list_devices` |
+| `MERLIN_TRACKER_CONTROL_PORT` | **`tracker_usb.py`** listens here so **`voice.py`** can pause face tracking during PTZ gestures (`8903` default). Set **`MERLIN_TRACKER_CONTROL_URL`** if host/port differ. |
 | `MERLIN_NONVERBAL` | Nonverbal sound cues on/off (`1` default, set `0`/`false` to disable `open/close/thinking/ready`) |
-| `MERLIN_AUTOSTART_MCP` | Start Claude MCP extension servers when `main.py` launches (`1` default; set `0` to skip) |
-| `MERLIN_BRAIN_MCP` | Let **`brain.py`** call those MCP tools (Notes, Messages, Mac automation) via OpenAI-style `tools` in chat (`1` default) |
+| `MERLIN_AUTOSTART_MCP` | Start Claude MCP extension servers when `main.py` launches (`0` default; set `1` to enable) |
+| `MERLIN_BRAIN_MCP` | Let **`brain.py`** call MCP tools in chat (`0` default; set `1` with servers enabled in `mcp_servers.json`) |
 | `MERLIN_BRAIN_MCP_MAX_ROUNDS` | Max tool-call rounds per utterance (default `8`, cap `20`) |
-| `MERLIN_IMESSAGE_POLL_INTERVAL` | Poll for **new inbound** iMessages (read-only `chat.db`) every *N* seconds (`15` default, `0` off) |
+| `MERLIN_IMESSAGE_POLL_INTERVAL` | Poll for **new inbound** iMessages (read-only `chat.db`) every *N* seconds (`0` default = off; set e.g. `15` to enable) |
 | `MERLIN_IMESSAGE_CHAT_DB` | Path to Messages DB (default `~/Library/Messages/chat.db`) |
 | `MERLIN_IMESSAGE_MIN_TEXT_LEN` | Skip notifications shorter than this (default `1`) |
 
-**Proactive iMessage readouts:** Merlin announces new texts via `imessage_watcher.py` (not via MCP). The app process needs **Full Disk Access** in **System Settings → Privacy & Security → Full Disk Access** (add Terminal, Cursor, or `python3`). Sending/replying still uses MCP + voice when you ask.
+**Proactive iMessage readouts:** Optional — set **`MERLIN_IMESSAGE_POLL_INTERVAL`** to a positive number (e.g. `15`). Merlin announces new texts via `imessage_watcher.py` (not via MCP). The app process needs **Full Disk Access** for `chat.db` reads. Sending/replying uses MCP + voice only when those integrations are enabled.
 
 **Restart / port 8900 in use:** If a previous Merlin did not exit cleanly, the HTTP server may fail with “address already in use”. Free the port and restart (the start script stops the tracker when main exits; if something is stuck, kill tracker too):
 
