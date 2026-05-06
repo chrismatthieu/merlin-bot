@@ -29,10 +29,12 @@ from pathlib import Path
 
 import cv2
 
+import config
+
 # ── Config ──────────────────────────────────────────────────────
 
-# Camera index (0 = first camera, 1 = second — set after probe)
-CAMERA_INDEX = int(os.getenv("MERLIN_CAMERA_INDEX", "0"))  # PIXY confirmed at index 0 on Chris's Mac, index 1 on Nate's Mac
+# Same resolution as config.USB_CAMERA_* — index comes from config (env or PIXY auto-detect).
+CAMERA_INDEX = config.USB_CAMERA_INDEX
 CAMERA_WIDTH = 1920
 CAMERA_HEIGHT = 1080
 CAMERA_FPS = 30

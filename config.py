@@ -2,6 +2,8 @@
 
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from dotenv import load_dotenv
 from requests.auth import HTTPDigestAuth
@@ -103,8 +105,49 @@ NONVERBAL_ENABLED = os.getenv("MERLIN_NONVERBAL", "1").strip().lower() not in {"
 # Default off: macOS say / Kokoro runs seconds of echo suppression on the USB mic and eats the next phrase.
 VERBAL_UNMUTE_ACK = os.getenv("MERLIN_VERBAL_UNMUTE_ACK", "0").strip().lower() not in {"0", "false", "no", "off"}
 
+
+def _detect_merlin_avfoundation_index():
+    """Find AVFoundation video index for the EMEET PIXY (Merlin) USB camera.
+
+    Index 0 on macOS is usually the built-in FaceTime camera; we must not default
+    to it when MERLIN_CAMERA_INDEX is unset.
+    """
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-f", "avfoundation", "-list_devices", "true", "-i", ""],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    blob = (r.stderr or "") + (r.stdout or "")
+    for line in blob.splitlines():
+        if not re.search(r"emeet|pixy", line, re.I):
+            continue
+        m = re.search(r"\[(\d+)\]", line)
+        if m:
+            return int(m.group(1))
+    return None
+
+
 # ── USB Camera (EMEET PIXY) ─────────────────────────────────────
-USB_CAMERA_INDEX = int(os.getenv("MERLIN_CAMERA_INDEX", "0"))
+_explicit_cam = (os.environ.get("MERLIN_CAMERA_INDEX") or "").strip()
+if _explicit_cam != "":
+    USB_CAMERA_INDEX = int(_explicit_cam)
+elif sys.platform == "darwin" and AUDIO_SOURCE == "usb":
+    _auto = _detect_merlin_avfoundation_index()
+    if _auto is None:
+        raise RuntimeError(
+            "MERLIN_AUDIO_SOURCE=usb but the Merlin camera (EMEET PIXY) was not found "
+            "via ffmpeg AVFoundation. Plug in the Merlin USB camera, free the device from "
+            "other apps, or set MERLIN_CAMERA_INDEX to its video index explicitly "
+            "(do not use 0 unless that index is really the PIXY — 0 is usually FaceTime)."
+        )
+    USB_CAMERA_INDEX = _auto
+else:
+    USB_CAMERA_INDEX = int(os.getenv("MERLIN_CAMERA_INDEX", "0"))
+
 USB_CAMERA_WIDTH = 1920
 USB_CAMERA_HEIGHT = 1080
 USB_CAMERA_FPS = 30
