@@ -69,6 +69,13 @@ class Vision:
     def is_alive(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    def scene_snapshot(self) -> dict:
+        """Last cached scene description (HTTP/MCP integrations)."""
+        return {
+            "description": self._scene_description or "",
+            "timestamp": self._scene_timestamp,
+        }
+
     def _on_convo_active(self, **kw):
         self._conversation_active = True
 

@@ -295,6 +295,46 @@ class MerlinHTTPHandler(http.server.BaseHTTPRequestHandler):
                 self.send_response(503)
                 self.end_headers()
 
+        elif self.path == "/speak":
+            body = json.loads(self.rfile.read(length))
+            text = (body.get("text") or "").strip()
+            if not text:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": False, "error": "missing text"}).encode())
+            else:
+                log.info(f'[http-speak] "{text[:200]}{"…" if len(text) > 200 else ""}"')
+                self.orchestrator.bus.emit("speak", text=text)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": True}).encode())
+
+        elif self.path == "/ptz":
+            body = json.loads(self.rfile.read(length))
+            action = (body.get("action") or "").strip()
+            if action not in config.PTZ_ACTIONS:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error": "invalid or missing action",
+                            "allowed": sorted(config.PTZ_ACTIONS),
+                        }
+                    ).encode()
+                )
+            else:
+                log.info(f"[http-ptz] {action}")
+                self.orchestrator.bus.emit("ptz_action", action=action)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"ok": True, "action": action}).encode())
+
         else:
             self.send_response(404)
             self.end_headers()
@@ -307,6 +347,17 @@ class MerlinHTTPHandler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(body)
+        elif self.path == "/scene":
+            vision = self._get_module("vision")
+            if vision and hasattr(vision, "scene_snapshot"):
+                body = json.dumps(vision.scene_snapshot()).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(503)
+                self.end_headers()
         else:
             self.send_response(404)
             self.end_headers()

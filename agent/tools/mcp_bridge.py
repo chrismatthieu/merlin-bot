@@ -186,10 +186,37 @@ def load_mcp_tools(config_path: str = None, verbose: bool = True) -> tuple[list[
         if not args:
             continue
 
+        # Resolve Python MCP server path relative to this config file or repo root
+        if args and isinstance(args[0], str) and args[0].endswith(".py"):
+            raw = args[0]
+            p = Path(raw)
+            if not p.is_absolute():
+                resolved = None
+                for base in (config_file.parent, config_file.parent.parent):
+                    cand = (base / raw).resolve()
+                    if cand.is_file():
+                        resolved = str(cand)
+                        break
+                if resolved:
+                    args = [resolved] + list(args[1:])
+                elif verbose:
+                    print(f"[mcp] {name}: Python MCP script not found for {raw!r} (tried next to {config_file.name} and repo root)")
+
+        try:
+            tool_timeout = float(server_config.get("tool_call_timeout", 30))
+        except (TypeError, ValueError):
+            tool_timeout = 30.0
+
         if verbose:
             print(f"[mcp] {name}: starting... ({args[0]})")
 
-        client = MCPClient(name=name, command=command, args=args, env=env)
+        client = MCPClient(
+            name=name,
+            command=command,
+            args=args,
+            env=env,
+            tool_call_timeout=tool_timeout,
+        )
         try:
             client.start()
             tools = client.list_tools()

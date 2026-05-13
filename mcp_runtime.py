@@ -31,6 +31,11 @@ def has_mcp_tools() -> bool:
     return len(_tools) > 0
 
 
+def has_claude_code_delegate_tool() -> bool:
+    """True if Claude Code delegate MCP server is registered (tool name ends with __delegate_to_claude_code)."""
+    return any(str(n).endswith("__delegate_to_claude_code") for n in _tools)
+
+
 def get_openai_tool_definitions() -> list[dict]:
     """OpenAI/Ollama-compatible tool list."""
     out: list[dict] = []

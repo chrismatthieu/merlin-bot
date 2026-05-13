@@ -49,21 +49,68 @@ The `agent/` directory contains a separate ReAct agent that gives Merlin's local
 | `agent/mcp_client.py` | JSON-RPC 2.0 MCP client over stdio |
 | `agent/tools/filesystem.py` | Sandboxed file read/write/list |
 | `agent/tools/mcp_bridge.py` | Discovers and wraps MCP server tools |
+| `agent/claude_delegate_mcp_server.py` | stdio MCP server: **`delegate_to_claude_code`** runs `claude -p` and injects Merlin MCP so headless Claude can call **`merlin_claude_finished`** (TTS) when done |
 
 `agent/mcp_servers.json` is machine-agnostic. Each server entry uses `extension_id` (Claude extension folder name under *Claude Extensions*); at runtime `agent/tools/mcp_bridge.py` searches common install locations on macOS and picks `…/<extension_id>/server/index.js`. You can override discovery with:
 
 - `MERLIN_MCP_EXTENSIONS_ROOT` — directory that directly contains the extension folders (e.g. if Claude stores extensions somewhere nonstandard)
 - `MERLIN_MCP_<SERVER>_SCRIPT` — full path to that server’s `index.js` (e.g. `MERLIN_MCP_NOTES_SCRIPT`)
 
-You can still set explicit `args` with `~` / env vars; those are tried before `extension_id` search.
+You can still set explicit `args` with `~` / env vars; those are tried before `extension_id` search. For **Python** stdio servers (e.g. `claude_delegate_mcp_server.py`), a relative first arg is resolved next to `mcp_servers.json` or the repo root. Optional per-server **`tool_call_timeout`** (seconds) controls how long `agent/mcp_client.py` waits on `tools/call` (default `30`; the delegate server defaults to **`7200`** in the sample entry because `claude -p` can run a long time).
 
 When you run **`main.py`** (including `./start-merlin-ollama.sh`), Merlin can **pre-start** the same MCP extension servers as `agent/mcp_servers.json` (**off by default** via `MERLIN_AUTOSTART_MCP`). Set **`MERLIN_AUTOSTART_MCP=1`**, set **`"enabled": true`** on the servers you want, and install the matching Claude extensions (or `MERLIN_MCP_*_SCRIPT` paths). Voice **`brain.py`** uses those tools only when **`MERLIN_BRAIN_MCP=1`**. The ReAct CLI is still `python agent/main.py` (use `--no-mcp` to skip servers there). If both app and agent start MCP, you may get duplicate Node processes.
 
-With **`MERLIN_BRAIN_MCP=1`**, voice/chat **`brain.py`** can call the same tool definitions (Apple Notes, iMessage/SMS, Mac automation) if MCP servers are running and your LLM supports **OpenAI-compatible** `tools` / `tool_calls` (e.g. recent Ollama or LM Studio); otherwise the brain replies without tools.
+With **`MERLIN_BRAIN_MCP=1`**, voice/chat **`brain.py`** can call the same tool definitions (Apple Notes, iMessage/SMS, Mac automation, and optionally **`claude-delegate__delegate_to_claude_code`**) if MCP servers are running and your LLM supports **OpenAI-compatible** `tools` / `tool_calls` (e.g. recent Ollama or LM Studio); otherwise the brain replies without tools.
 
 With integrations off (defaults), the brain is told **not** to pretend Notes/Messages/Contacts actions succeeded.
 
 **If you turn iMessage tools on:** the model is instructed to call **`search_contacts`** before **`send_imessage`** and not to guess numbers. Wrong recipients often come from **STT** mangling a name into digits — say the contact name clearly, or use explicit digits for numbers not in Contacts.
+
+### Merlin as an MCP server (Claude Desktop / Claude Code)
+
+Merlin can also act as an **MCP server** so Claude Desktop or Claude Code can call the running bot over HTTP. This is separate from the extension MCP **client** above: here Claude launches `merlin_mcp_server.py`, which proxies to Merlin’s HTTP port (`TRACKER_LISTEN_PORT`, default **8900**).
+
+1. Start Merlin (`python main.py` or your shell script) so `GET /health` works.
+2. Register the stdio server in Claude with env **`MERLIN_HTTP_BASE`** if you use a non-default port (default `http://127.0.0.1:8900`).
+
+| Tool | HTTP |
+|------|------|
+| `merlin_health` | `GET /health` |
+| `merlin_scene` | `GET /scene` |
+| `merlin_think` | `POST /think` `{"text":"..."}` — brain reply only, no TTS |
+| `merlin_speak` | `POST /speak` `{"text":"..."}` — queue speech on the Merlin machine |
+| `merlin_claude_finished` | Same as `merlin_speak` — prefer this when **Claude Code** (or any MCP client) finishes work Nova asked for, so completion is explicit |
+| `merlin_ptz` | `POST /ptz` `{"action":"look_left"}` (etc.) — same PTZ presets as voice (`look_left`, `look_right`, `look_up`, `look_down`, `look_center`, `look_around`); handled by **`voice.py`** via uvc-util |
+
+**Nova → Claude (voice):** enable the **`claude-delegate`** entry in `agent/mcp_servers.json` (`"enabled": true`), set **`MERLIN_AUTOSTART_MCP=1`** and **`MERLIN_BRAIN_MCP=1`**. Nova’s LLM can call **`claude-delegate__delegate_to_claude_code`**, which runs **`claude -p`** with a generated **`--mcp-config`** so the headless session can call **`merlin_claude_finished`** and you hear a spoken completion line. Set **`MERLIN_CLAUDE_CODE_CWD`** (or pass `working_directory` in the tool) to the repo you want Claude to work in. **`claude`** must be on `PATH`.
+
+**Claude → Nova (spoken “done”):** in Claude Desktop or Claude Code, add the **`merlin`** MCP server (`merlin_mcp_server.py`) as documented below; when you finish a task Nova asked for, call **`merlin_claude_finished`** (or **`merlin_speak`**) with a short sentence.
+
+**Claude Desktop (macOS):** *Settings → Developer → Edit config* (or edit `~/Library/Application Support/Claude/claude_desktop_config.json`) and add under `mcpServers`:
+
+```json
+"merlin": {
+  "command": "python3",
+  "args": ["/ABSOLUTE/PATH/TO/merlin-bot/merlin_mcp_server.py"],
+  "env": {
+    "MERLIN_HTTP_BASE": "http://127.0.0.1:8900"
+  }
+}
+```
+
+**Claude Code:** from the repo (or with absolute paths), for example user-scoped:
+
+```bash
+claude mcp add --transport stdio --scope user merlin \
+  --env MERLIN_HTTP_BASE=http://127.0.0.1:8900 \
+  -- python3 /ABSOLUTE/PATH/TO/merlin-bot/merlin_mcp_server.py
+```
+
+You can instead commit a project-root **`.mcp.json`** with the same `mcpServers` shape as in the [Claude Code MCP docs](https://code.claude.com/docs/en/mcp). This repo includes **`.mcp.json`** so opening Claude Code **in the `merlin-bot` directory** registers the **`merlin`** server (`python3 merlin_mcp_server.py` with cwd = project root). If you open Claude Code elsewhere, copy that file or run **`claude mcp add`** from that project. If `/mcp` still shows nothing, confirm you launched Claude Code from the repo root (or add a user-scoped server with **`claude mcp add --scope user ...`**). If you previously rejected project MCP prompts, run **`claude mcp reset-project-choices`** and restart.
+
+Use **`/mcp`** in Claude Code to confirm the server connected.
+
+Merlin’s HTTP server listens on **`0.0.0.0`**; `/think` and `/speak` drive the live bot — treat network exposure accordingly.
 
 ---
 
@@ -184,6 +231,10 @@ The tracker notifies the brain at `http://localhost:8900/event` for face arrived
 | `MERLIN_AUTOSTART_MCP` | Start Claude MCP extension servers when `main.py` launches (`0` default; set `1` to enable) |
 | `MERLIN_BRAIN_MCP` | Let **`brain.py`** call MCP tools in chat (`0` default; set `1` with servers enabled in `mcp_servers.json`) |
 | `MERLIN_BRAIN_MCP_MAX_ROUNDS` | Max tool-call rounds per utterance (default `8`, cap `20`) |
+| `MERLIN_BRAIN_MCP_LLM_TIMEOUT` | Seconds for each **LLM** HTTP request during brain MCP tool rounds (default `180`) |
+| `MERLIN_CLAUDE_CODE_CWD` | Default working directory for **`claude-delegate__delegate_to_claude_code`** when the model omits `working_directory` (defaults to `$HOME`) |
+| `MERLIN_CLAUDE_CODE_PERMISSION_MODE` | Passed to **`claude -p`** (default `acceptEdits`; see `claude --help`) |
+| `MERLIN_CLAUDE_DELEGATE_TIMEOUT_SEC` | Max seconds for each **`claude -p`** subprocess inside the delegate MCP server (default `3600`) |
 | `MERLIN_IMESSAGE_POLL_INTERVAL` | Poll for **new inbound** iMessages (read-only `chat.db`) every *N* seconds (`0` default = off; set e.g. `15` to enable) |
 | `MERLIN_IMESSAGE_CHAT_DB` | Path to Messages DB (default `~/Library/Messages/chat.db`) |
 | `MERLIN_IMESSAGE_MIN_TEXT_LEN` | Skip notifications shorter than this (default `1`) |

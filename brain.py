@@ -397,6 +397,11 @@ Messages / iMessage — strict rules:
 - If search_contacts finds no one, or several possible people, do not send. Ask one short clarifying question.
 - If the transcribed request looks like a name but the payload looks like a random number, treat it as unreliable — search_contacts first, never send to an unverified number."""
 
+CLAUDE_DELEGATE_MCP_GUIDANCE = """Claude Code (desktop / CLI) delegation:
+- When {operator} asks you to have Claude Code do real work in a repository (refactor, fix bugs, run a multi-step coding task), call the tool **claude-delegate__delegate_to_claude_code** with a clear **task** string. Pass **working_directory** as the absolute path to the repo when you can infer it; otherwise the server default applies.
+- Do not claim Claude did the work unless that tool returned a result. Summarize the result briefly for voice.
+- Use delegation for coding/repo work, not for casual chat you can answer directly. Never ask the nested Claude to delegate back to Nova or to spawn another `claude` process."""
+
 # When MCP did not start (no Claude extension servers), stop the model from fabricating actions.
 NO_MCP_TOOLS_GUIDANCE = """Integration status: you have NO connected tools for Apple Notes, iMessage/SMS, or Mac apps in this session.
 If {operator} asks to save a note, send a text, or change anything outside this chat, say honestly that you cannot — integrations are not connected. Do not pretend the action succeeded. One short sentence."""
@@ -856,7 +861,7 @@ class Brain:
                 resp = requests.post(
                     config.LLM_URL,
                     json=_payload,
-                    timeout=120,
+                    timeout=config.BRAIN_MCP_LLM_TIMEOUT,
                 )
             except Exception:
                 log.exception("LLM error (tool round)")
@@ -931,6 +936,10 @@ class Brain:
         )
         if config.BRAIN_MCP and mcp_runtime.has_mcp_tools():
             system = system + "\n\n" + MCP_TOOL_GUIDANCE.format(operator=config.BOT_OPERATOR)
+            if mcp_runtime.has_claude_code_delegate_tool():
+                system = system + "\n\n" + CLAUDE_DELEGATE_MCP_GUIDANCE.format(
+                    operator=config.BOT_OPERATOR
+                )
         elif config.BRAIN_MCP and not mcp_runtime.has_mcp_tools():
             system = system + "\n\n" + NO_MCP_TOOLS_GUIDANCE.format(operator=config.BOT_OPERATOR)
         else:

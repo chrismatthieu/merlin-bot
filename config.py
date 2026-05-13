@@ -13,6 +13,8 @@ _repo_root = Path(__file__).parent
 load_dotenv(_repo_root.parent / ".env")
 load_dotenv(_repo_root / ".env", override=True)
 
+from ptz_actions import PTZ_ACTIONS
+
 
 def _load_soul(path: Path) -> dict[str, str]:
     """Load simple key/value config from soul.md."""
@@ -228,6 +230,10 @@ try:
     BRAIN_MCP_MAX_ROUNDS = max(1, min(20, int(os.getenv("MERLIN_BRAIN_MCP_MAX_ROUNDS", "8"))))
 except ValueError:
     BRAIN_MCP_MAX_ROUNDS = 8
+try:
+    BRAIN_MCP_LLM_TIMEOUT = max(30, int(os.getenv("MERLIN_BRAIN_MCP_LLM_TIMEOUT", "180")))
+except ValueError:
+    BRAIN_MCP_LLM_TIMEOUT = 180
 
 # ── iMessage watcher (local chat.db poll) ─────────────────────────
 try:

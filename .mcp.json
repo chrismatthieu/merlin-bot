@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "merlin": {
+      "command": "python3",
+      "args": ["merlin_mcp_server.py"],
+      "env": {
+        "MERLIN_HTTP_BASE": "http://127.0.0.1:8900"
+      }
+    }
+  }
+}

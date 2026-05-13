@@ -10,11 +10,19 @@ import queue
 class MCPClient:
     """Connects to an MCP server via stdio (JSON-RPC 2.0, newline-delimited)."""
 
-    def __init__(self, name: str, command: str, args: list[str], env: dict = None):
+    def __init__(
+        self,
+        name: str,
+        command: str,
+        args: list[str],
+        env: dict = None,
+        tool_call_timeout: float = 30.0,
+    ):
         self.name = name
         self.command = command
         self.args = args
         self.env = env
+        self.tool_call_timeout = float(tool_call_timeout)
         self.process = None
         self.request_id = 0
         self.responses = {}
@@ -44,11 +52,15 @@ class MCPClient:
         self._reader_thread.start()
 
         # Initialize the MCP connection
-        result = self._request("initialize", {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {"name": "rbos-agent", "version": "1.0.0"},
-        })
+        result = self._request(
+            "initialize",
+            {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "rbos-agent", "version": "1.0.0"},
+            },
+            timeout=30.0,
+        )
 
         # Send initialized notification
         self._notify("notifications/initialized", {})
@@ -56,15 +68,19 @@ class MCPClient:
 
     def list_tools(self) -> list[dict]:
         """Discover available tools from the server."""
-        result = self._request("tools/list", {})
+        result = self._request("tools/list", {}, timeout=30.0)
         return result.get("tools", []) if result else []
 
     def call_tool(self, tool_name: str, arguments: dict) -> str:
         """Execute a tool and return the result as a string."""
-        result = self._request("tools/call", {
-            "name": tool_name,
-            "arguments": arguments,
-        })
+        result = self._request(
+            "tools/call",
+            {
+                "name": tool_name,
+                "arguments": arguments,
+            },
+            timeout=self.tool_call_timeout,
+        )
         if result is None:
             return "Error: no response from MCP server"
 
