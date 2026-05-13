@@ -23,6 +23,21 @@ import mcp_runtime
 
 log = logging.getLogger("merlin.brain")
 
+
+def _assistant_visible_text(msg: object) -> str:
+    """Final spoken line from an OpenAI-style chat `message` (never internal reasoning)."""
+    if not isinstance(msg, dict):
+        return ""
+    return (msg.get("content") or "").strip()
+
+
+def _clip_for_voice(text: str, limit: int = 480) -> str:
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0]
+    return cut + "…" if cut else text[:limit]
+
+
 # When sleeping, Whisper may return "Wake", "Wake up.", "Un-mute", etc.
 _MUTED_UNMUTE_FLEX_RE = re.compile(
     r"\b(wake(?:[\s\-]+up)?|wakeup|unmute|unmutes|start\s+listening)\b",
@@ -68,9 +83,10 @@ INTENT_RULES = [
     (Intent.COMMAND, [
         r"^capture[:\s]", r"^remind me", r"^set timer", r"^mute", r"^unmute",
         r"^what time is it", r"^what date is it", r"^what day is it",
-        r"^date", r"^time", r"^timer", r"^look\b", r"^scan\b", r"^pan\b",
+        r"^date", r"^time",
         r"\b(what('s| is)\s+the\s+time|current\s+time|time\s+now)\b",
         r"\b(what('s| is)\s+the\s+date|today'?s\s+date|current\s+date)\b",
+        r"^look\b", r"^scan\b", r"^pan\b",
         r"\blook\s+(left|right|up|down|around|center|centre|straight|ahead|forward)\b",
         r"\bscan\s+(the\s+)?room\b",
         r"\bpan\s+(left|right|up|down)\b",
@@ -211,9 +227,11 @@ Keep it to one sentence."""
 
 
 def question_prompt() -> str:
-    return f"""{config.BOT_OPERATOR} asked a question. Answer directly and concisely.
+    return f"""{config.BOT_OPERATOR} asked a question. Give the direct answer only — no reasoning, no setup, no "well" or "so".
 For yes/no questions, start your first word with exactly "Yes." or "No.".
 For true/false questions, start your first word with exactly "True." or "False.".
+World trivia, capitals, definitions, and how things work: use normal knowledge and answer directly. Do not treat those as questions about the camera.
+Only for what is physically in the room, on the desk, or in camera view: use the line that starts with "What you see:" in your instructions. If that line is empty for a *room* question, say you are not sure yet.
 If you need to reference RBOS files, say what you know from context.
 Under 50 words."""
 
@@ -242,7 +260,7 @@ Be direct. Bullet points. Under 50 words."""
 
 
 def general_prompt() -> str:
-    return "Respond naturally. Brief. Under 30 words."
+    return "Respond naturally. Direct answer only, no reasoning trail. Brief. Under 30 words."
 
 
 INTENT_PROMPTS = {
@@ -261,7 +279,7 @@ INTENT_MAX_TOKENS = {
     Intent.CHECK_IN: 150,
     Intent.COMMAND: 30,
     Intent.TRANSITION: 60,
-    Intent.QUESTION: 200,
+    Intent.QUESTION: 280,
     Intent.GENERAL: 100,
 }
 
@@ -298,6 +316,11 @@ def handle_command(text: str, bus) -> str | None:
         item = re.match(r"^remind me[:\s]+(.+)", text, re.IGNORECASE).group(1).strip()
         _save_capture(f"REMINDER: {item}")
         return f"I'll remind you: {item}"
+
+    # Timer — no OS alarm yet; log like a reminder so nothing is silently dropped.
+    if re.search(r"\b(set\s+(a\s+)?timer|start\s+(a\s+)?timer)\b", text_lower):
+        _save_capture(f"TIMER: {text.strip()}")
+        return "I can't fire the system clock yet. I saved that as a reminder line. Use the Clock app for a real alarm."
 
     # Camera movement
     if re.search(r"\b(look|scan|pan)\b", text_lower):
@@ -347,6 +370,9 @@ Personality: {bot_personality}
 Voice rules:
 - One or two short sentences. Under 30 words total.
 - Plain declarative speech. No exclamation points. No therapy language.
+- Answer the question asked only. Never narrate reasoning, steps, uncertainty, or how you decided.
+- No "I think", "first", "let me", "I'd say", or thinking out loud. Give the conclusion only.
+- Straight trivia (capitals, definitions, how-to): answer directly. That is not doing his thinking for him.
 - You help {bot_operator} think. You do not think for him.
 - You do not motivate, lecture, or list tasks. You observe and reflect.
 - When he's stuck, ask one question. When he succeeds, name it simply.
@@ -619,14 +645,17 @@ class Brain:
         self._last_intent = intent
         log.info(f"Intent: {intent.name} | Phase: {phase.name} | \"{message[:50]}\"")
 
-        # 5. COMMAND short-circuit — no LLM needed
+        # 5. COMMAND short-circuit — only when we have a built-in handler; else LLM
         if intent == Intent.COMMAND:
             response = handle_command(message, self._bus)
             if response:
                 self._last_spoken = response
                 self._bus.emit("speak", text=response)
                 self._last_response_time = time.time()
-            return
+                return
+            intent = Intent.GENERAL
+            phase = self._state_machine.update(intent, hour)
+            log.info("COMMAND had no handler — falling back to LLM (GENERAL)")
 
         # 6. Think with intent context
         self._refresh_context_if_stale()
@@ -814,17 +843,19 @@ class Brain:
         req_max = max(max_tokens, 512)
         for round_i in range(config.BRAIN_MCP_MAX_ROUNDS):
             try:
+                _payload = {
+                    "model": config.LLM_MODEL,
+                    "messages": messages,
+                    "tools": tools,
+                    "tool_choice": "auto",
+                    "stream": False,
+                    "temperature": 0.5,
+                    "max_tokens": req_max,
+                }
+                _payload.update(config.llm_openai_request_extras())
                 resp = requests.post(
                     config.LLM_URL,
-                    json={
-                        "model": config.LLM_MODEL,
-                        "messages": messages,
-                        "tools": tools,
-                        "tool_choice": "auto",
-                        "stream": False,
-                        "temperature": 0.5,
-                        "max_tokens": req_max,
-                    },
+                    json=_payload,
                     timeout=120,
                 )
             except Exception:
@@ -840,7 +871,6 @@ class Brain:
                 return None
 
             msg = resp.json().get("choices", [{}])[0].get("message", {}) or {}
-            content = (msg.get("content") or "").strip()
             tool_calls = msg.get("tool_calls")
 
             if tool_calls:
@@ -861,13 +891,20 @@ class Brain:
                     messages.append({"role": "tool", "tool_call_id": tid, "content": result})
                 continue
 
-            text = content
+            text = _assistant_visible_text(msg)
             text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
             text = re.sub(r"<\|channel>thought.*?<channel\|>", "", text, flags=re.DOTALL).strip()
-            if text:
-                self._history.append({"user": message, "assistant": text})
-                log.info(f"[{intent.name}] Response (tools): {text}")
-            return text or None
+            text = _clip_for_voice(text)
+            if not text:
+                log.warning(
+                    "LLM tool round: empty content (model=%s); keys: %s",
+                    config.LLM_MODEL,
+                    list(msg.keys()),
+                )
+                text = "I drew a blank on that one. Ask again in a few words."
+            self._history.append({"user": message, "assistant": text})
+            log.info(f"[{intent.name}] Response (tools): {text}")
+            return text
 
         log.warning("MCP tool loop exceeded max rounds")
         return None
@@ -923,26 +960,39 @@ class Brain:
             log.warning("Brain MCP tool path failed or unsupported; falling back without tools")
 
         try:
+            _payload = {
+                "model": config.LLM_MODEL,
+                "messages": messages,
+                "stream": False,
+                "temperature": 0.5,
+                "max_tokens": max_tokens,
+            }
+            _payload.update(config.llm_openai_request_extras())
             resp = requests.post(
                 config.LLM_URL,
-                json={
-                    "model": config.LLM_MODEL,
-                    "messages": messages,
-                    "stream": False,
-                    "temperature": 0.5,
-                    "max_tokens": max_tokens,
-                },
+                json=_payload,
                 timeout=60,
             )
 
             if resp.status_code == 200:
-                text = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                raw = resp.json()
+                msg = raw.get("choices", [{}])[0].get("message", {}) or {}
+                text = _assistant_visible_text(msg)
                 text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
                 text = re.sub(r"<\|channel>thought.*?<channel\|>", "", text, flags=re.DOTALL).strip()
+                text = _clip_for_voice(text)
                 if text:
                     self._history.append({"user": message, "assistant": text})
                     log.info(f"[{intent.name}] Response: {text}")
-                return text or None
+                else:
+                    log.warning(
+                        "LLM returned empty content (model=%s); raw message keys: %s",
+                        config.LLM_MODEL,
+                        list(msg.keys()),
+                    )
+                    text = "I drew a blank on that one. Ask again in a few words."
+                    self._history.append({"user": message, "assistant": text})
+                return text
             log.error(f"LLM error: {resp.status_code} — {resp.text[:200]}")
             return None
         except Exception:

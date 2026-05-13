@@ -174,6 +174,7 @@ The tracker notifies the brain at `http://localhost:8900/event` for face arrived
 | Variable | Role |
 |----------|------|
 | `MERLIN_LLM_URL` | OpenAI-compatible chat URL (default Ollama: `http://localhost:11434/v1/chat/completions`) |
+| `MERLIN_LLM_REASONING_EFFORT` | Ollama only: `none` (default when URL has `:11434/`), or `low` / `medium` / `high` to allow visible chain-of-thought in `content` |
 | `MERLIN_MODEL` | Chat model id (default **`qwen3-vl:2b`** with `start-merlin-ollama.sh`; LM Studio default in `config.py` is `qwen/qwen3-vl-4b`) |
 | `MERLIN_VISION_MODEL` | VLM for scene description (default `qwen3-vl:2b`) |
 | `MERLIN_AUDIO_SOURCE` | `usb` for PIXY on the same Mac |

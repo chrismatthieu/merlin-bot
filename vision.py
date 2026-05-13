@@ -189,7 +189,7 @@ class Vision:
 
             img_b64 = base64.b64encode(config.FRAME_PATH.read_bytes()).decode()
 
-            body = json.dumps({
+            body_obj = {
                 "model": config.VISION_MODEL,
                 "messages": [
                     {"role": "system", "content": "Describe what you see in one sentence. Be factual and brief. /no_think"},
@@ -201,7 +201,9 @@ class Vision:
                 "max_tokens": 300,
                 "temperature": 0.3,
                 "stream": False,
-            }).encode()
+            }
+            body_obj.update(config.llm_openai_request_extras())
+            body = json.dumps(body_obj).encode()
 
             req = urllib.request.Request(
                 config.LLM_URL,

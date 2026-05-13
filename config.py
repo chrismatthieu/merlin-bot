@@ -78,6 +78,26 @@ CAMERA_ONVIF_PTZ = f"http://{CAMERA_IP}/onvif/ptz_service"
 LLM_URL = os.getenv("MERLIN_LLM_URL", "http://localhost:1234/v1/chat/completions")
 LLM_MODEL = os.getenv("MERLIN_MODEL", "qwen/qwen3-vl-4b")
 
+
+def llm_openai_request_extras() -> dict:
+    """Extra fields for OpenAI-compatible `POST .../v1/chat/completions`.
+
+    Ollama uses `reasoning_effort` so chain-of-thought stays out of spoken `content`.
+    Set `MERLIN_LLM_REASONING_EFFORT` to `none|low|medium|high`; when unset and the
+    URL targets Ollama (port 11434), default is "none" for voice. Other servers
+    receive no extra keys.
+    """
+    u = (LLM_URL or "").lower()
+    ollama = re.search(r":11434/", u) is not None
+    raw = os.getenv("MERLIN_LLM_REASONING_EFFORT", "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        raw = "none"
+    if raw in ("none", "low", "medium", "high"):
+        return {"reasoning_effort": raw}
+    if not raw and ollama:
+        return {"reasoning_effort": "none"}
+    return {}
+
 # Legacy Ollama (kept for fallback)
 OLLAMA_URL = "http://localhost:11434/api/chat"
 OLLAMA_MODEL = "gemma4:e4b"
