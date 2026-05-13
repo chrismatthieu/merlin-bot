@@ -23,7 +23,7 @@ EMEET PIXY (USB-C) ─── Video + Audio ───> Mac (Apple Silicon)
 USB Speaker ◄──── afplay ────────────────── voice.py
 ```
 
-Chat and vision can use different models (for example **Ollama** `llama3.2:3b` for text and `qwen3-vl:2b` for scene description). See `start-merlin-ollama.sh` for defaults.
+Chat and vision can use different models (for example **Ollama** `qwen3-vl:2b` for both chat and scene description). See `start-merlin-ollama.sh` for defaults.
 
 | Module | File | What it does |
 |--------|------|-------------|
@@ -118,7 +118,7 @@ All models run locally. No API keys required for core operation.
 
 | Component | Model (examples) | Notes |
 |-----------|------------------|--------|
-| Chat LLM | `qwen/qwen3-vl-4b` (LM Studio), **`llama3.2:3b`** (Ollama) | `MERLIN_MODEL` — text + tool routing |
+| Chat LLM | `qwen/qwen3-vl-4b` (LM Studio), **`qwen3-vl:2b`** (Ollama) | `MERLIN_MODEL` — text + tool routing |
 | Vision / scene | Same multimodal model *or* dedicated VLM, e.g. **`qwen3-vl:2b`** (Ollama) | `MERLIN_VISION_MODEL` — what `vision.py` sends to the API |
 | STT | Whisper via **mlx-whisper** | Requires **ffmpeg** (e.g. `brew install ffmpeg`) on macOS |
 | TTS | Kokoro (mlx-audio) | Falls back to **macOS `say`** if Kokoro/mlx-audio errors |
@@ -151,7 +151,7 @@ Use this when the **EMEET PIXY** is the mic and camera and you want **local Olla
 
 **Prerequisites**
 
-- [Ollama](https://ollama.com) running (`ollama serve`) with models pulled, e.g. `ollama pull llama3.2:3b` and `ollama pull qwen3-vl:2b`
+- [Ollama](https://ollama.com) running (`ollama serve`) with models pulled, e.g. `ollama pull qwen3-vl:2b`
 - **ffmpeg** on PATH (`brew install ffmpeg`) — STT-related tooling and AVFoundation device probing
 - **uvc-util** for reliable PTZ on some PIXY/macOS setups: build from [jtfrey/uvc-util](https://github.com/jtfrey/uvc-util) and install the binary to `~/.local/bin` (or PATH). `ptz_uvc.py` and `voice.py` also search common paths.
 - YuNet weights: `models/face_detection_yunet_2023mar.onnx`
@@ -174,7 +174,7 @@ The tracker notifies the brain at `http://localhost:8900/event` for face arrived
 | Variable | Role |
 |----------|------|
 | `MERLIN_LLM_URL` | OpenAI-compatible chat URL (default Ollama: `http://localhost:11434/v1/chat/completions`) |
-| `MERLIN_MODEL` | Chat model id (default `llama3.2:3b`) |
+| `MERLIN_MODEL` | Chat model id (default **`qwen3-vl:2b`** with `start-merlin-ollama.sh`; LM Studio default in `config.py` is `qwen/qwen3-vl-4b`) |
 | `MERLIN_VISION_MODEL` | VLM for scene description (default `qwen3-vl:2b`) |
 | `MERLIN_AUDIO_SOURCE` | `usb` for PIXY on the same Mac |
 | `MERLIN_CAMERA_INDEX` | Video device index; start scripts usually set this from `ffmpeg -f avfoundation -list_devices` |
@@ -189,7 +189,7 @@ The tracker notifies the brain at `http://localhost:8900/event` for face arrived
 
 **Proactive iMessage readouts:** Optional — set **`MERLIN_IMESSAGE_POLL_INTERVAL`** to a positive number (e.g. `15`). Merlin announces new texts via `imessage_watcher.py` (not via MCP). The app process needs **Full Disk Access** for `chat.db` reads. Sending/replying uses MCP + voice only when those integrations are enabled.
 
-**Restart / port 8900 in use:** If a previous Merlin did not exit cleanly, the HTTP server may fail with “address already in use”. Free the port and restart (the start script stops the tracker when main exits; if something is stuck, kill tracker too):
+**Restart / port 8900 in use:** `./start-merlin-ollama.sh` stops anything listening on **8900** and stray **`tracker_usb.py`** processes before starting, so you should not see “address already in use” from a stale Merlin. If you still do, free the port manually:
 
 ```bash
 lsof -nP -iTCP:8900 -sTCP:LISTEN   # note PID

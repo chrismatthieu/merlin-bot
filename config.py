@@ -8,8 +8,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 from requests.auth import HTTPDigestAuth
 
-# Load .env from RBOS root
-load_dotenv(Path(__file__).parent.parent / ".env")
+# Load .env: optional parent workspace, then this repo (repo wins on duplicate keys)
+_repo_root = Path(__file__).parent
+load_dotenv(_repo_root.parent / ".env")
+load_dotenv(_repo_root / ".env", override=True)
 
 
 def _load_soul(path: Path) -> dict[str, str]:
@@ -111,6 +113,10 @@ def _detect_merlin_avfoundation_index():
 
     Index 0 on macOS is usually the built-in FaceTime camera; we must not default
     to it when MERLIN_CAMERA_INDEX is unset.
+
+    Only lines under **AVFoundation video devices** are considered so we do not
+    pick an EMEET USB *audio* endpoint (same composite device) or another mic line.
+    When multiple EMEET video devices exist, prefer a line whose name contains **PIXY**.
     """
     try:
         r = subprocess.run(
@@ -122,9 +128,32 @@ def _detect_merlin_avfoundation_index():
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
     blob = (r.stderr or "") + (r.stdout or "")
-    for line in blob.splitlines():
-        if not re.search(r"emeet|pixy", line, re.I):
-            continue
+
+    def _video_device_lines() -> list[str]:
+        lines = blob.splitlines()
+        out: list[str] = []
+        in_video = False
+        for line in lines:
+            if "AVFoundation video devices" in line:
+                in_video = True
+                continue
+            if "AVFoundation audio devices" in line:
+                in_video = False
+                continue
+            if in_video:
+                out.append(line)
+        return out
+
+    video_lines = _video_device_lines()
+    # Older ffmpeg / odd builds: no section headers — fall back to full log (legacy behavior).
+    scan_lines = video_lines if video_lines else blob.splitlines()
+
+    matches = [ln for ln in scan_lines if re.search(r"emeet|pixy", ln, re.I)]
+    if not matches:
+        return None
+    pixy_named = [ln for ln in matches if re.search(r"pixy", ln, re.I)]
+    ordered = pixy_named if pixy_named else matches
+    for line in ordered:
         m = re.search(r"\[(\d+)\]", line)
         if m:
             return int(m.group(1))

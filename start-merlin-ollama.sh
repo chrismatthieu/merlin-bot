@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-/Users/chrismatthieu/miniconda3/envs/merlin311/bin/python}"
 
 MERLIN_LLM_URL="${MERLIN_LLM_URL:-http://localhost:11434/v1/chat/completions}"
-MERLIN_MODEL="${MERLIN_MODEL:-llama3.2:3b}"
+MERLIN_MODEL="${MERLIN_MODEL:-qwen3-vl:2b}"
 MERLIN_VISION_MODEL="${MERLIN_VISION_MODEL:-qwen3-vl:2b}"
 MERLIN_AUDIO_SOURCE="${MERLIN_AUDIO_SOURCE:-usb}"
 MERLIN_CAMERA_INDEX="${MERLIN_CAMERA_INDEX:-0}"
@@ -57,8 +57,17 @@ fi
 
 if [ "$MERLIN_AUDIO_SOURCE" = "usb" ]; then
   DEVICE_LIST="$(ffmpeg -f avfoundation -list_devices true -i "" 2>&1 || true)"
-  PIXY_LINE="$(printf "%s\n" "$DEVICE_LIST" | grep -Ei "emeet|pixy" || true)"
-  if [ -z "$PIXY_LINE" ]; then
+  # Only the AVFoundation *video* list — avoids matching EMEET USB audio on the same composite device.
+  VIDEO_BLOCK="$(printf "%s\n" "$DEVICE_LIST" | awk '/AVFoundation video devices/,/AVFoundation audio devices/')"
+  PIXY_LINES="$(printf "%s\n" "$VIDEO_BLOCK" | grep -Ei "pixy" || true)"
+  if [ -z "$PIXY_LINES" ]; then
+    PIXY_LINES="$(printf "%s\n" "$VIDEO_BLOCK" | grep -Ei "emeet" || true)"
+  fi
+  if [ -z "$PIXY_LINES" ]; then
+    # No section headers (older ffmpeg): fall back to whole device list
+    PIXY_LINES="$(printf "%s\n" "$DEVICE_LIST" | grep -Ei "emeet|pixy" || true)"
+  fi
+  if [ -z "$PIXY_LINES" ]; then
     echo "Error: EMEET PIXY is not detected by macOS."
     echo "Detected cameras:"
     printf "%s\n" "$DEVICE_LIST" | grep -E "AVFoundation video devices|\\[[0-9]+\\]"
@@ -71,7 +80,7 @@ if [ "$MERLIN_AUDIO_SOURCE" = "usb" ]; then
     exit 1
   fi
 
-  DETECTED_INDEX="$(printf "%s\n" "$PIXY_LINE" | sed -E 's/.*\[([0-9]+)\].*/\1/' | head -n 1)"
+  DETECTED_INDEX="$(printf "%s\n" "$PIXY_LINES" | sed -E 's/.*\[([0-9]+)\].*/\1/' | head -n 1)"
   if [ -n "$DETECTED_INDEX" ]; then
     MERLIN_CAMERA_INDEX="$DETECTED_INDEX"
   fi
@@ -92,6 +101,17 @@ echo
 
 cd "$ROOT_DIR"
 
+# Avoid false "healthy" from a stale Merlin while a new main.py hits EADDRINUSE on :8900.
+_free_merlin_listener() {
+  local port="${MERLIN_HTTP_PORT:-8900}"
+  for pid in $(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null); do
+    echo "Freeing port $port (stopping PID $pid)"
+    kill -9 "$pid" 2>/dev/null || true
+  done
+  pkill -9 -f "tracker_usb.py" 2>/dev/null || true
+  sleep 0.5
+}
+
 _run_main_env() {
   MERLIN_LLM_URL="$MERLIN_LLM_URL" \
   MERLIN_MODEL="$MERLIN_MODEL" \
@@ -102,6 +122,7 @@ _run_main_env() {
 }
 
 if [ "$MERLIN_AUDIO_SOURCE" = "usb" ] && [ "$MERLIN_START_TRACKER" != "0" ]; then
+  _free_merlin_listener
   _run_main_env "$PYTHON_BIN" -u main.py &
   MAIN_PID=$!
 
